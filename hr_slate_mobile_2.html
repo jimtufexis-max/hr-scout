@@ -917,10 +917,12 @@ function renderDetail(h){
     <button class="dtab${tab==='stats'?' active':''}" onclick="setDTab('${h.id}','stats',event)">Stats</button>
     <button class="dtab${tab==='pitch'?' active':''}" onclick="setDTab('${h.id}','pitch',event)">vs Mix</button>
     <button class="dtab${tab==='platoon'?' active':''}" onclick="setDTab('${h.id}','platoon',event)">Platoon</button>
+    <button class="dtab${tab==='debug'?' active':''}" onclick="setDTab('${h.id}','debug',event)">🔧</button>
   </div>`;
   if(tab==='stats')return tabs+statsTab(h,spName,spHand);
   if(tab==='pitch')return tabs+pitchTab(h,spName,spHand);
   if(tab==='platoon')return tabs+platoonTab(h,spHand);
+  if(tab==='debug')return tabs+debugTab(h,spName,spHand);
   return tabs;
 }
 
@@ -1009,6 +1011,93 @@ function platoonTab(h,spHand){
     <tbody>${rows}</tbody></table>
     <div style="font-size:.66rem;color:var(--muted);margin-top:7px">★ = today's matchup</div>`;
 }
+
+function debugTab(h,spName,spHand){
+  const pRow=S.team==='away'?S.pRows.away:S.pRows.home;
+  const pf=PARK[S.team==='away'?S.game?.home:S.game?.away]||1.00;
+  const ws=S.weather?wxScore(S.weather):50;
+  const hs=calcHitterScore(h);
+  const pr=calcPitcherRisk(pRow);
+  const pm=calcPMComposite(h.pitchSplits,h.arsenal);
+  const pmS=pm?.woba!=null?Math.round(Math.max(0,Math.min(100,(pm.woba-0.220)/(0.420-0.220)*100))):null;
+  const plS=h.platWoba!=null?Math.round(Math.max(0,Math.min(100,(h.platWoba-0.220)/(0.420-0.220)*100))):null;
+
+  // Show every metric used in scoring
+  const hitterMetrics=[
+    ['barrel_pct','Barrel%','4','18','higher'],['hard_hit_pct','Hard Hit%','30','55','higher'],
+    ['avg_ev','Exit Velo','86','95','higher'],['avg_la','Launch Angle','8','18','higher'],
+    ['sweet_spot_pct','Sweet Spot%','25','42','higher'],['fb_pct','FB%','22','45','higher'],
+    ['pull_pct','Pull%','28','50','higher'],['k_pct','K%','6','30','lower'],
+  ];
+  const pitcherMetrics=[
+    ['brl_pct','Brl% Allow','2','14','higher'],['hr_per_fb','HR/FB','5','20','higher'],
+    ['hard_hit_pct','HH% Allow','28','50','higher'],['k_pct','K%','14','35','lower'],
+    ['fb_pct','FB% Allow','20','50','higher'],['avg_ev','EV Allow','82','93','higher'],
+  ];
+
+  const hRows=hitterMetrics.map(([k,l,lo,hi,dir])=>{
+    const v=h[k];const MLB_AVG_H={barrel_pct:7,hard_hit_pct:38,avg_ev:88.5,avg_la:12,sweet_spot_pct:31,fb_pct:35,pull_pct:40,k_pct:22};
+    const src=v!=null?'✅':'❌ missing (no score)';
+    return`<tr style="border-bottom:1px solid rgba(42,58,82,.5)">
+      <td style="padding:3px 5px;font-size:.72rem;color:var(--muted)">${l}</td>
+      <td style="padding:3px 5px;font-family:'DM Mono',monospace;font-size:.72rem">${v!=null?v.toFixed(2):'—'}</td>
+      <td style="padding:3px 5px;font-size:.65rem;color:${v!=null?'#4ade80':'#f87171'}">${src}</td>
+    </tr>`;
+  }).join('');
+
+  const pRows=pitcherMetrics.map(([k,l,lo,hi,dir])=>{
+    const MLB_AVG_P={brl_pct:6.5,hr_per_fb:12,hard_hit_pct:37,k_pct:22,fb_pct:35,avg_ev:88};
+    const v=pRow?pRow[k]:null;const used=v!=null?v:MLB_AVG_P[k];
+    const src=v!=null?'✅ real':'⚠️ lg avg';
+    return`<tr style="border-bottom:1px solid rgba(42,58,82,.5)">
+      <td style="padding:3px 5px;font-size:.72rem;color:var(--muted)">${l}</td>
+      <td style="padding:3px 5px;font-family:'DM Mono',monospace;font-size:.72rem">${v!=null?v.toFixed(2):'—'} → ${used.toFixed(2)}</td>
+      <td style="padding:3px 5px;font-size:.65rem;color:${v!=null?'#4ade80':'#fbbf24'}">${src}</td>
+    </tr>`;
+  }).join('');
+
+  return`
+    <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">
+      Raw data used for scoring — compare to Streamlit app
+    </div>
+
+    <div style="margin-bottom:10px;padding:8px;background:rgba(245,158,11,.06);border-radius:7px;border:1px solid rgba(245,158,11,.2)">
+      <div style="font-size:.62rem;color:#f59e0b;font-weight:700;margin-bottom:5px">SCORE SUMMARY</div>
+      <div style="font-size:.76rem;line-height:1.8;color:var(--text)">
+        HR Score: <strong>${h.hrScore??'—'}</strong> &nbsp;|&nbsp;
+        Hitter: <strong>${hs??'—'}</strong> &nbsp;|&nbsp;
+        P.Risk: <strong>${pr??'—'}</strong><br>
+        Mix wOBA: <strong>${pm?.woba?.toFixed(3)??'—'}</strong> →score <strong>${pmS??'—'}</strong><br>
+        Platoon wOBA: <strong>${h.platWoba?.toFixed(3)??'—'}</strong> →score <strong>${plS??'—'}</strong><br>
+        Park: <strong>${pf.toFixed(2)}×</strong> &nbsp; Weather: <strong>${Math.round(ws)}</strong>
+      </div>
+    </div>
+
+    <div style="font-size:.62rem;color:#4ade80;font-weight:700;margin-bottom:4px">HITTER METRICS (used in Hitter Score)</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+      <thead><tr>
+        <th style="text-align:left;padding:3px 5px;font-size:.6rem;color:var(--muted);border-bottom:1px solid var(--bdr)">Metric</th>
+        <th style="padding:3px 5px;font-size:.6rem;color:var(--muted);border-bottom:1px solid var(--bdr)">Value</th>
+        <th style="padding:3px 5px;font-size:.6rem;color:var(--muted);border-bottom:1px solid var(--bdr)">Source</th>
+      </tr></thead>
+      <tbody>${hRows}</tbody>
+    </table>
+
+    <div style="font-size:.62rem;color:#f87171;font-weight:700;margin-bottom:4px">PITCHER METRICS (used in Pitcher Risk)</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+      <thead><tr>
+        <th style="text-align:left;padding:3px 5px;font-size:.6rem;color:var(--muted);border-bottom:1px solid var(--bdr)">Metric</th>
+        <th style="padding:3px 5px;font-size:.6rem;color:var(--muted);border-bottom:1px solid var(--bdr)">Actual → Used</th>
+        <th style="padding:3px 5px;font-size:.6rem;color:var(--muted);border-bottom:1px solid var(--bdr)">Source</th>
+      </tr></thead>
+      <tbody>${pRows}</tbody>
+    </table>
+
+    <div style="font-size:.62rem;color:var(--muted);padding:5px 8px;background:var(--surf);border-radius:5px">
+      Player ID: ${h.id} · ${spName} (${spHand==='L'?'LHP':'RHP'}) · Arsenal pitches: ${Object.keys(h.arsenal).length}
+    </div>`;
+}
+
 
 /* ═══ PITCHERS PAGE ═══════════════════════════════════════════════════ */
 function renderPitchers(){
