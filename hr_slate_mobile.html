@@ -770,7 +770,8 @@ async function getL14(bid, season) {
     l14_hr:hrs,l14_woba:woba?Math.round(woba*1000)/1000:null,l14_games:dates.size,l14_pa:pa};
 }
 
-// AB log — tries multiple Savant URL formats + MLB Stats API game log fallback
+// AB log — direct browser fetch of Savant CSV
+// Works in real browser (GitHub Pages/Safari/Chrome) — Savant allows browser requests
 async function getABLog(bid, season, pHand=null, pitchTypes=null) {
   if (!bid) return [];
   const pid = String(bid);
@@ -781,43 +782,40 @@ async function getABLog(bid, season, pHand=null, pitchTypes=null) {
     const st = new Date(); st.setDate(st.getDate()-90);
     const fd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
-    // Strategy 1: Savant search CSV with hfAB filter (AB-ending pitches only, small payload)
-    const savantUrls = [
-      // With date window (faster)
+    const urls = [
       `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st)}&game_date_lt=${fd(now)}&type=details&`,
-      // Full season
       `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&type=details&`,
-      // Alternate format sometimes used
-      `https://baseballsavant.mlb.com/statcast_search/csv?hfGT=R%7C&hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&type=details&`,
     ];
 
-    for (const url of savantUrls) {
-      const txt = await pxt(url);
-      if (!txt || txt.length < 100) continue;
-      // Must look like a CSV with headers we recognize
-      const firstLine = txt.split('\n')[0].toLowerCase();
-      if (firstLine.includes('pitch_type') || firstLine.includes('game_date') || firstLine.includes('events')) {
-        _svc[cacheKey] = {type:'csv', data:txt};
-        break;
-      }
-    }
+    for (const url of urls) {
+      // Direct browser fetch — works when app runs in Safari/Chrome (GitHub Pages)
+      // Savant blocks server-side proxies but allows real browser requests
+      let txt = null;
+      try {
+        const r = await fetch(url, {signal: AbortSignal.timeout(20000)});
+        if (r.ok) {
+          const t = await r.text();
+          if (t && t.length > 200 && !t.startsWith('<') && !t.includes('not in allowlist')) txt = t;
+        }
+      } catch(e) {}
 
-    // Strategy 2: MLB Stats API play-by-play (works through API, no CORS issue)
-    if (!_svc[cacheKey]) {
-      const pbpData = await fetchMLBPlayLog(pid, season);
-      if (pbpData && pbpData.length > 0) {
-        _svc[cacheKey] = {type:'mlb', data:pbpData};
+      // Proxy fallback (may not work for Savant, but worth trying)
+      if (!txt) txt = await pxt(url);
+
+      if (txt && txt.length > 200 && !txt.startsWith('<')) {
+        const first = txt.split('
+')[0].toLowerCase();
+        if (first.includes('pitch_type') || first.includes('events') || first.includes('game_date')) {
+          _svc[cacheKey] = txt; break;
+        }
       }
     }
   }
 
   if (!_svc[cacheKey]) return [];
-
-  const cached = _svc[cacheKey];
-  if (cached.type === 'csv') return parseABCSV(cached.data, pHand, pitchTypes);
-  if (cached.type === 'mlb') return filterABRows(cached.data, pHand, pitchTypes);
-  return [];
+  return parseABCSV(_svc[cacheKey], pHand, pitchTypes);
 }
+
 
 // Parse Savant CSV into AB rows
 function parseABCSV(txt, pHand, pitchTypes) {
@@ -879,42 +877,7 @@ function parseABCSV(txt, pHand, pitchTypes) {
   return out;
 }
 
-// MLB Stats API play log fallback — game-by-game, no pitch data but still useful
-async function fetchMLBPlayLog(pid, season) {
-  try {
-    const url = `${MLB_API}/people/${pid}/stats?stats=gameLog&group=hitting&season=${season}&gameType=R`;
-    const d = await px(url);
-    const splits = d?.stats?.[0]?.splits||[];
-    if (!splits.length) return null;
-    // Convert game-log splits to AB-like rows (no pitch detail but at least shows results)
-    const out = [];
-    for (const s of splits) {
-      const stat = s.stat||{};
-      const gd = s.date||'';
-      const opp = s.opponent?.abbreviation||'—';
-      // Create one row per HR in this game
-      const hrs = parseInt(stat.homeRuns)||0;
-      for (let i=0;i<hrs;i++) {
-        out.push({date:gd.slice(5,10),pitcher:opp+' pitcher',arm:'?',pt:'?',ptNm:'—',
-          ev:null,la:null,dist:null,bs:null,velo:null,
-          evt:'home run',isHR:true,isBrl:false,hrPk:'✓ HR'});
-      }
-      // And one row per hit
-      const hits = (parseInt(stat.hits)||0) - hrs;
-      for (let i=0;i<hits;i++) {
-        out.push({date:gd.slice(5,10),pitcher:opp+' pitcher',arm:'?',pt:'?',ptNm:'—',
-          ev:null,la:null,dist:null,bs:null,velo:null,
-          evt:'hit',isHR:false,isBrl:false,hrPk:'0/30'});
-      }
-    }
-    return out.length ? out : null;
-  } catch { return null; }
-}
 
-function filterABRows(rows, pHand, pitchTypes) {
-  // MLB play log rows have no pitch type/arm data, so ignore those filters
-  return rows;
-}
 
 /* ══════════════════════════════════════════════════════════
    DATE
