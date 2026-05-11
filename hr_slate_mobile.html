@@ -884,7 +884,7 @@ function renderHitters(){
       h.barrel_pct!=null?`<span class="mtag ${mtCls(h.barrel_pct,4,15,true)}">${h.barrel_pct.toFixed(1)}% Brl</span>`:'',
       h.avg_la!=null?`<span class="mtag ${mtCls(h.avg_la,8,18,true)}">${h.avg_la.toFixed(1)}° LA</span>`:'',
       h.pull_pct!=null?`<span class="mtag ${mtCls(h.pull_pct,30,48,true)}">${h.pull_pct.toFixed(1)}% Pull</span>`:'',
-      h.pm?.woba!=null?`<span class="mtag ${mtCls(h.pm.woba,.290,.390,true)}">${h.pm.woba.toFixed(3)} Mix</span>`:'',
+      h.fb_pct!=null?`<span class="mtag ${mtCls(h.fb_pct,22,42,true)}">${h.fb_pct.toFixed(1)}% FB</span>`:'',
     ].filter(Boolean).join('');
     return`
       <div class="h-row${isOpen?' open':''}" onclick="toggleH('${h.id}')">
