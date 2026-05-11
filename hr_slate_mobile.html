@@ -757,40 +757,65 @@ async function getL14(bid, season) {
     l14_hr:hrs,l14_woba:woba?Math.round(woba*1000)/1000:null,l14_games:dates.size,l14_pa:pa};
 }
 
-// AB log for AB Explorer — uses rolling window fetch, not full season (too large for proxy)
+// AB log for AB Explorer
+// Uses Savant statcast_search with hfAB filter so only AB-ending pitches come back
+// Much smaller payload than full pitch-by-pitch, works through CORS proxy
 async function getABLog(bid, season, pHand=null, pitchTypes=null) {
   if (!bid) return [];
   const pid = String(bid);
 
-  // Fetch last 60 days of data — big enough to have 20+ ABs, small enough to load
-  // If empty, fall back to last 120 days
-  async function fetchWindow(days) {
+  // AB result types to filter server-side (reduces payload ~10x vs all pitches)
+  const abFilter = [
+    'single','double','triple','home_run',
+    'field_out','grounded_into_double_play','strikeout','strikeout_double_play',
+    'force_out','field_error','fielders_choice','fielders_choice_out',
+    'double_play','sac_fly','sac_bunt','walk','hit_by_pitch',
+  ].join('%7C');
+
+  // Cache key includes season
+  const cacheKey = `ab-${pid}-${season}`;
+  if (!_svc[cacheKey]) {
+    // Try date-windowed first (faster), fall back to season
     const now = new Date();
-    const start = new Date(); start.setDate(start.getDate() - days);
+    const st60 = new Date(); st60.setDate(st60.getDate()-60);
+    const st120 = new Date(); st120.setDate(st120.getDate()-120);
     const fd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    const url = `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(start)}&game_date_lt=${fd(now)}&type=details&`;
-    const txt = await pxt(url);
-    return txt && txt.length > 200 ? txt : null;
+
+    const urls = [
+      // 60-day window with AB filter — smallest, fastest
+      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st60)}&game_date_lt=${fd(now)}&hfAB=${abFilter}&type=details&`,
+      // 120-day window
+      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st120)}&game_date_lt=${fd(now)}&hfAB=${abFilter}&type=details&`,
+      // Full season with AB filter
+      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&hfAB=${abFilter}&type=details&`,
+    ];
+
+    for (const url of urls) {
+      const txt = await pxt(url);
+      if (txt && txt.length > 200 && txt.includes(',')) {
+        // Verify it looks like a real CSV (has headers with known columns)
+        const firstLine = txt.split('\n')[0];
+        if (firstLine.toLowerCase().includes('pitch_type') || firstLine.toLowerCase().includes('events') || firstLine.toLowerCase().includes('game_date')) {
+          _svc[cacheKey] = txt;
+          break;
+        }
+      }
+    }
   }
 
-  // Try 60 days first, then 120, then full season (last resort)
-  let txt = null;
-  for (const days of [60, 120]) {
-    txt = await fetchWindow(days);
-    if (txt) break;
-  }
-  // Full season fallback — only if windowed fetch failed
-  if (!txt) {
-    const url = `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&type=details&`;
-    txt = await pxt(url);
-  }
+  const txt = _svc[cacheKey];
   if (!txt || txt.length < 100) return [];
 
   const rows = txt.trim().split('\n');
   if (rows.length < 2) return [];
   const hdrs = rows[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
 
-  // Only rows where events column is non-empty = final pitch of each PA
+  const g = (row, k) => {
+    const i = hdrs.indexOf(k);
+    return i >= 0 ? (row[i]||'').trim().replace(/"/g,'') : null;
+  };
+
+  // All AB-ending events (client-side filter as backup)
   const AB_EVENTS = new Set([
     'single','double','triple','home_run',
     'field_out','grounded_into_double_play','strikeout','strikeout_double_play',
@@ -799,18 +824,14 @@ async function getABLog(bid, season, pHand=null, pitchTypes=null) {
     'walk','hit_by_pitch','catcher_interf',
   ]);
 
-  const g = (row, k) => {
-    const i = hdrs.indexOf(k);
-    return i >= 0 ? row[i]?.trim().replace(/"/g,'') : null;
-  };
-
   const out = [];
   for (let i = 1; i < rows.length; i++) {
-    if (!rows[i].trim()) continue;
-    const cols = rows[i].split(',');
+    const line = rows[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    if (cols.length < 5) continue;
 
-    // Must have a real AB-ending event
-    const evt = (g(cols,'events')||'').toLowerCase().replace(/ /g,'_');
+    const evt = (g(cols,'events')||'').toLowerCase().trim();
     if (!evt || !AB_EVENTS.has(evt)) continue;
 
     const arm = g(cols,'p_throws')||'?';
@@ -825,20 +846,17 @@ async function getABLog(bid, season, pHand=null, pitchTypes=null) {
     const bs   = parseFloat(g(cols,'bat_speed'));
     const velo = parseFloat(g(cols,'release_speed'));
     const gd   = g(cols,'game_date')||'';
-
-    // Pitcher name: Savant has "Last, First" in player_name for the pitcher
     const pitcher = g(cols,'player_name')||'—';
 
-    // Barrel: EV >= 98 + LA in sweet spot range
+    // Barrel check
     let isBrl = false;
     if (!isNaN(ev) && ev >= 98 && !isNaN(la)) {
       const mx = Math.min(50, 30+(ev-98));
-      const mn = Math.max(8, 26-(ev-98));
+      const mn = Math.max(8,  26-(ev-98));
       if (la >= mn && la <= mx) isBrl = true;
     }
     const isHR = evt === 'home_run';
 
-    // HR parks estimate from distance
     let hrPk = '0/30';
     if (isHR) hrPk = '✓ HR';
     else if (!isNaN(dist) && dist > 0) {
@@ -846,17 +864,15 @@ async function getABLog(bid, season, pHand=null, pitchTypes=null) {
     }
 
     out.push({
-      date: gd.length >= 7 ? gd.slice(5,10) : gd,
-      pitcher,
-      arm,
-      pt,
-      ptNm: PN[pt]||pt||'—',
-      ev:   isNaN(ev)   ? null : Math.round(ev*10)/10,
-      la:   isNaN(la)   ? null : Math.round(la*10)/10,
-      dist: isNaN(dist) ? null : Math.round(dist),
-      bs:   isNaN(bs)   ? null : Math.round(bs*10)/10,
-      velo: isNaN(velo) ? null : Math.round(velo*10)/10,
-      evt:  evt.replace(/_/g,' '),
+      date:   gd.length >= 10 ? gd.slice(5,10) : gd,
+      pitcher, arm, pt,
+      ptNm:   PN[pt] || pt || '—',
+      ev:     isNaN(ev)   ? null : Math.round(ev*10)/10,
+      la:     isNaN(la)   ? null : Math.round(la*10)/10,
+      dist:   isNaN(dist) ? null : Math.round(dist),
+      bs:     isNaN(bs)   ? null : Math.round(bs*10)/10,
+      velo:   isNaN(velo) ? null : Math.round(velo*10)/10,
+      evt:    evt.replace(/_/g,' '),
       isHR, isBrl, hrPk,
     });
   }
@@ -1414,10 +1430,25 @@ function clearPTypes(){S.abPitchTypes=[];renderABFilter();}
 async function runAB(){
   if (!S.abBatter){document.getElementById('abContent').innerHTML='<div class="empty">Select a batter</div>';return;}
   document.getElementById('abContent').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading at-bats…</div>';
-  const arm=S.abArm==='Both'?null:S.abArm;
-  let rows=await getABLog(S.abBatter.id,2026,arm,S.abPitchTypes.length?S.abPitchTypes:null);
-  if(!rows.length) rows=await getABLog(S.abBatter.id,2025,arm,S.abPitchTypes.length?S.abPitchTypes:null);
-  S.abRows=rows.slice(0,S.abCount===999?9999:S.abCount);
+  document.getElementById('abSummary').innerHTML='';
+  const arm = S.abArm==='Both'?null:S.abArm;
+  const pts  = S.abPitchTypes.length ? S.abPitchTypes : null;
+
+  let rows = await getABLog(S.abBatter.id, 2026, arm, pts);
+  if (!rows.length) rows = await getABLog(S.abBatter.id, 2025, arm, pts);
+
+  if (!rows.length) {
+    // Check if cache has data at all (no filter)
+    const rawKey = `ab-${S.abBatter.id}-2026`;
+    const rawKey25 = `ab-${S.abBatter.id}-2025`;
+    const hasCache = _svc[rawKey] || _svc[rawKey25];
+    document.getElementById('abContent').innerHTML = hasCache
+      ? `<div class="empty">No at-bats match these filters.<br><small style="font-size:.75rem">Try removing pitch type or arm filters.</small></div>`
+      : `<div class="empty">No at-bat data found.<br><small style="font-size:.75rem">Savant data loads via proxy — may take a moment or retry.</small></div>`;
+    return;
+  }
+
+  S.abRows = rows.slice(0, S.abCount===999 ? 9999 : S.abCount);
   renderABResults();
 }
 
