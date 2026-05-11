@@ -14,7 +14,7 @@
   --bg:#0f1117;--bg2:#161b27;--bg3:#1c2333;--bdr:#2d3d52;
   --text:#f0f4f8;--text2:#c8d8e8;--muted:#90a0b0;--dim:#607080;
   --amber:#f0a500;--blue:#3d8ef0;--green:#22c95e;--red:#e0504a;
-  --safe-t:env(safe-area-inset-top,44px);--safe-b:env(safe-area-inset-bottom,20px);
+  --safe-t:env(safe-area-inset-top,0px);--safe-b:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html{height:-webkit-fill-available}
@@ -24,7 +24,7 @@ body{background:var(--bg);color:var(--text2);font-family:'Inter',system-ui,sans-
 
 /* TOP BAR */
 .topbar{position:sticky;top:0;z-index:200;background:var(--bg);border-bottom:1px solid var(--bdr);
-  padding:calc(var(--safe-t) + 8px) 16px 12px;display:flex;align-items:center;gap:10px}
+  padding:10px 16px 10px;display:flex;align-items:center;gap:10px}
 .logo{font-weight:800;font-size:1.25rem;letter-spacing:-.02em;color:var(--text);flex:1}
 .logo span{color:var(--amber)}
 .date-pill{display:flex;align-items:center;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;overflow:hidden}
@@ -375,7 +375,7 @@ async function pickGame(idx){
   renderGameChips();
   const g=S.game;const pf=PARK[g.home]||1.00;
   const w=await getWx(g.venue);S.weather=w;const ws=wxS(w);
-  document.getElementById('wxBar').innerHTML=[['&#x1F321;&#xFE0F;',`${Math.round(w.temp)}&#xB0;F`,'Temp'],['&#x1F4A8;',`${wLbl(w.wind,w.wdir)}`,'Wind'],['&#x1F327;&#xFE0F;',`${Math.round(w.rain)}%`,'Rain'],['&#x1F3DF;&#xFE0F;',`${pf.toFixed(2)}&times;`,'Park'],['&#x2600;&#xFE0F;',`${Math.round(ws)}/100`,'Score']].map(([ic,v,l])=>`<div class="wchip"><span class="wv">${ic} ${v}</span><span class="wl">${l}</span></div>`).join('');
+  document.getElementById('wxBar').innerHTML=[['🌡️',`${Math.round(w.temp)}°F`,'Temp'],['💨',`${wLbl(w.wind,w.wdir)}`,'Wind'],['🌧️',`${Math.round(w.rain)}%`,'Rain'],['🏟️',`${pf.toFixed(2)}×`,'Park'],['☀️',`${Math.round(ws)}/100`,'Score']].map(([ic,v,l])=>`<div class="wchip"><span class="wv">${ic} ${v}</span><span class="wl">${l}</span></div>`).join('');
   const[awH,hmH,awA,hmA]=await Promise.all([getPH(g.awaySpId),getPH(g.homeSpId),getArs(g.awaySpId,2026),getArs(g.homeSpId,2026)]);
   S.pHands={away:awH,home:hmH};S.arsenals={away:hmA,home:awA};
   document.getElementById('teamTog').style.display='flex';
@@ -438,11 +438,11 @@ function renderSpCard(){
   const risk=calcPR(pRow);const conf=calcPC(pRow);
   const pf=PARK[S.team==='away'?g.home:g.away]||1.00;
   const hasData=pRow&&Object.values(pRow).some(v=>v!=null);
-  const avgNote=hasData?'':'<span style="font-size:.62rem;color:var(--amber);margin-left:4px">&#9733; lg avg</span>';
-  const stats=pRow?[['ERA',fmt(pRow.era)],['FIP',fmt(pRow.fip)],['K%',fmt(pRow.k_pct,1,'%')],['BB%',fmt(pRow.bb_pct,1,'%')],['HR/FB',fmt(pRow.hr_per_fb,1,'%')],['GB%',fmt(pRow.gb_pct,1,'%')],['Park',`${pf.toFixed(2)}&times;`]].map(([l,v])=>`<div class="sp-stat"><span class="sp-v">${v}</span><span class="sp-l">${l}</span></div>`).join(''):'';
+  const avgNote=hasData?'':'<span style="font-size:.62rem;color:var(--amber);margin-left:4px">★ lg avg</span>';
+  const stats=pRow?[['ERA',fmt(pRow.era)],['FIP',fmt(pRow.fip)],['K%',fmt(pRow.k_pct,1,'%')],['BB%',fmt(pRow.bb_pct,1,'%')],['HR/FB',fmt(pRow.hr_per_fb,1,'%')],['GB%',fmt(pRow.gb_pct,1,'%')],['Park',`${pf.toFixed(2)}×`]].map(([l,v])=>`<div class="sp-stat"><span class="sp-v">${v}</span><span class="sp-l">${l}</span></div>`).join(''):'';
   const ars=S.arsenals[S.team];
   const arsH=Object.entries(ars).sort((a,b)=>b[1]-a[1]).map(([pt,pct])=>{const c=PC[pt]||'#607080';const nm=PN[pt]||pt;return`<span class="ac" style="color:${c};border-color:${c}44;background:${c}11">${nm} ${pct.toFixed(0)}%</span>`;}).join('')||'<span style="color:var(--dim);font-size:.71rem">Loading…</span>';
-  document.getElementById('spArea').innerHTML=`<div class="sp-card"><div class="sp-head"><div class="sp-name">&#x26BE; ${spName}</div><div class="sp-hand">${spHand==='L'?'LHP':'RHP'}</div>${riskPill(risk)}${avgNote}${confB(conf)}</div>${stats?`<div class="sp-stats">${stats}</div>`:''}<div class="ars-wrap">${arsH}</div></div>`;
+  document.getElementById('spArea').innerHTML=`<div class="sp-card"><div class="sp-head"><div class="sp-name">⚾ ${spName}</div><div class="sp-hand">${spHand==='L'?'LHP':'RHP'}</div>${riskPill(risk)}${avgNote}${confB(conf)}</div>${stats?`<div class="sp-stats">${stats}</div>`:''}<div class="ars-wrap">${arsH}</div></div>`;
 }
 
 /* HITTER LIST */
@@ -454,7 +454,7 @@ function renderHitters(){
   document.getElementById('hList').innerHTML=rows.map((h,i)=>{
     const isOpen=S.openId===h.id;
     const rk=i===0?'r1':i===1?'r2':i===2?'r3':'';
-    const md=i===0?'&#x1F947;':i===1?'&#x1F948;':i===2?'&#x1F949;':`${i+1}`;
+    const md=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
     const l=h.l14||{};
     const minis=[
       l.l14_brl!=null?[l.l14_brl,'Brl L14',4,15,true,'%']:(h.barrel_pct!=null?[h.barrel_pct,'Brl',4,15,true,'%']:null),
@@ -462,7 +462,7 @@ function renderHitters(){
       l.l14_la!=null?[l.l14_la,'LA L14',8,18,true,'°']:(h.avg_la!=null?[h.avg_la,'LA',8,18,true,'°']:null),
       l.l14_hr!=null&&l.l14_hr>0?[l.l14_hr,'HR L14',0,3,true,'']:null,
     ].filter(Boolean).map(([v,lb,lo,hi,hib,s])=>`<span class="mtag ${mtC(v,lo,hi,hib)}">${typeof v==='number'&&!Number.isInteger(v)?v.toFixed(1):v}${s} ${lb}</span>`).join('');
-    return`<div class="h-row${isOpen?' open':''}" onclick="toggleH('${h.id}')"><div class="h-rank ${rk}">${md}</div><div class="h-info"><div class="h-name">${h.name} <span style="font-size:.67rem;color:var(--dim)">${h.batHand||'R'} &middot; ${h.pos}</span></div><div class="h-sub">${S.game?.[S.team==='away'?'away':'home']||''}</div>${minis?`<div class="h-minis">${minis}</div>`:''}</div><div class="h-sc">${sPill(h.hrScore,true)}<div class="sc-lbl">HR Score</div>${sPill(h.hs)}<div class="sc-lbl">Hitter</div>${h.hConf!=null?`<div>${confB(h.hConf)}</div>`:''}</div></div>${isOpen?`<div class="det-panel">${renderDetail(h)}</div>`:''}`;
+    return`<div class="h-row${isOpen?' open':''}" onclick="toggleH('${h.id}')"><div class="h-rank ${rk}">${md}</div><div class="h-info"><div class="h-name">${h.name} <span style="font-size:.67rem;color:var(--dim)">${h.batHand||'R'} · ${h.pos}</span></div><div class="h-sub">${S.game?.[S.team==='away'?'away':'home']||''}</div>${minis?`<div class="h-minis">${minis}</div>`:''}</div><div class="h-sc">${sPill(h.hrScore,true)}<div class="sc-lbl">HR Score</div>${sPill(h.hs)}<div class="sc-lbl">Hitter</div>${h.hConf!=null?`<div>${confB(h.hConf)}</div>`:''}</div></div>${isOpen?`<div class="det-panel">${renderDetail(h)}</div>`:''}`;
   }).join('');
 }
 
@@ -481,30 +481,30 @@ function renderDetail(h){
 
 function statsTab(h,spHand){
   const l=h.l14||{};const hasL=l.l14_ev!=null||l.l14_brl!=null;
-  const l14H=hasL?`<div class="l14-box"><div class="l14-title">&#x1F525; Last 14 Days${l.l14_games?` &middot; ${l.l14_games}G`:''}${l.l14_pa?` &middot; ${l.l14_pa}PA`:''}</div><div class="l14-grid">${l.l14_brl!=null?`<div class="l14-item"><span class="l14-val">${hcp(l.l14_brl,4,15)}</span><span class="l14-key">BRL%</span></div>`:''} ${l.l14_hard!=null?`<div class="l14-item"><span class="l14-val">${hcp(l.l14_hard,32,52)}</span><span class="l14-key">HARD%</span></div>`:''} ${l.l14_ev!=null?`<div class="l14-item"><span class="l14-val">${hcv(l.l14_ev,86,94)}</span><span class="l14-key">EV</span></div>`:''} ${l.l14_la!=null?`<div class="l14-item"><span class="l14-val">${hc(l.l14_la,8,18,true,1,'&deg;')}</span><span class="l14-key">LA</span></div>`:''} ${l.l14_woba!=null?`<div class="l14-item"><span class="l14-val">${hcn(l.l14_woba,.290,.390)}</span><span class="l14-key">wOBA</span></div>`:''} ${l.l14_hr!=null?`<div class="l14-item"><span class="l14-val" style="font-family:'JetBrains Mono',monospace;font-size:.8rem;font-weight:700;color:${l.l14_hr>0?'#ffd166':'var(--dim)'}">${l.l14_hr}</span><span class="l14-key">HR</span></div>`:''}</div></div>`:
+  const l14H=hasL?`<div class="l14-box"><div class="l14-title">🔥 Last 14 Days${l.l14_games?` · ${l.l14_games}G`:''}${l.l14_pa?` · ${l.l14_pa}PA`:''}</div><div class="l14-grid">${l.l14_brl!=null?`<div class="l14-item"><span class="l14-val">${hcp(l.l14_brl,4,15)}</span><span class="l14-key">BRL%</span></div>`:''} ${l.l14_hard!=null?`<div class="l14-item"><span class="l14-val">${hcp(l.l14_hard,32,52)}</span><span class="l14-key">HARD%</span></div>`:''} ${l.l14_ev!=null?`<div class="l14-item"><span class="l14-val">${hcv(l.l14_ev,86,94)}</span><span class="l14-key">EV</span></div>`:''} ${l.l14_la!=null?`<div class="l14-item"><span class="l14-val">${hc(l.l14_la,8,18,true,1,'°')}</span><span class="l14-key">LA</span></div>`:''} ${l.l14_woba!=null?`<div class="l14-item"><span class="l14-val">${hcn(l.l14_woba,.290,.390)}</span><span class="l14-key">wOBA</span></div>`:''} ${l.l14_hr!=null?`<div class="l14-item"><span class="l14-val" style="font-family:'JetBrains Mono',monospace;font-size:.8rem;font-weight:700;color:${l.l14_hr>0?'#ffd166':'var(--dim)'}">${l.l14_hr}</span><span class="l14-key">HR</span></div>`:''}</div></div>`:
   '<div style="font-size:.71rem;color:var(--dim);margin-bottom:8px">L14 loading…</div>';
-  const sr=[['AVG',h.avg,.215,.300,true,3,''],['OBP',h.obp,.305,.385,true,3,''],['SLG',h.slg,.340,.520,true,3,''],['OPS',h.ops,.700,.900,true,3,''],['HR',h.hr,3,35,true,0,''],['Barrel%',h.barrel_pct,4,15,true,1,'%'],['Hard Hit%',h.hard_hit_pct,32,52,true,1,'%'],['Exit Velo',h.avg_ev,86,94,true,1,' mph'],['Launch&deg;',h.avg_la,8,18,true,1,'&deg;'],['Pull%',h.pull_pct,30,48,true,1,'%'],['FB%',h.fb_pct,22,42,true,1,'%'],['K%',h.k_pct,8,28,false,1,'%'],['BB%',h.bb_pct,5,14,true,1,'%'],['SwStr%',h.swstr_pct,5,14,false,1,'%'],['ISO',h.iso,.100,.250,true,3,'']].map(([lb,v,lo,hi,hib,dec,suf])=>`<div class="srow"><span class="srow-lbl">${lb}</span>${hc(v,lo,hi,hib,dec,suf)}</div>`).join('');
+  const sr=[['AVG',h.avg,.215,.300,true,3,''],['OBP',h.obp,.305,.385,true,3,''],['SLG',h.slg,.340,.520,true,3,''],['OPS',h.ops,.700,.900,true,3,''],['HR',h.hr,3,35,true,0,''],['Barrel%',h.barrel_pct,4,15,true,1,'%'],['Hard Hit%',h.hard_hit_pct,32,52,true,1,'%'],['Exit Velo',h.avg_ev,86,94,true,1,' mph'],['Launch°',h.avg_la,8,18,true,1,'°'],['Pull%',h.pull_pct,30,48,true,1,'%'],['FB%',h.fb_pct,22,42,true,1,'%'],['K%',h.k_pct,8,28,false,1,'%'],['BB%',h.bb_pct,5,14,true,1,'%'],['SwStr%',h.swstr_pct,5,14,false,1,'%'],['ISO',h.iso,.100,.250,true,3,'']].map(([lb,v,lo,hi,hib,dec,suf])=>`<div class="srow"><span class="srow-lbl">${lb}</span>${hc(v,lo,hi,hib,dec,suf)}</div>`).join('');
   const pRow=S.team==='away'?S.pRows.away:S.pRows.home;
   const pr=calcPR(pRow);const pConf=calcPC(pRow);const pf=PARK[S.team==='away'?S.game?.home:S.game?.away]||1.00;
   const ws=S.weather?wxS(S.weather):50;const pm=calcPM(h.pitchSplits,h.arsenal);
   const pmS=pm?.woba!=null?Math.round(Math.max(0,Math.min(100,(pm.woba-.220)/(.420-.220)*100))):null;
   const plS=h.platWoba!=null?Math.round(Math.max(0,Math.min(100,(h.platWoba-.220)/(.420-.220)*100))):null;
-  const bkd=`<div class="sc-bkd"><div class="sc-bkd-title">HR Score Breakdown</div><div class="sc-row"><span class="srow-lbl">Final HR Score</span>${sPill(h.hrScore,true)}</div><div class="sc-row"><span class="srow-lbl">&#x26BE; Pitcher Risk <span class="sc-row-wt">28%</span></span>${riskPill(pr)} ${confB(pConf)}</div><div class="sc-row"><span class="srow-lbl">&#x1F3AF; Mix wOBA <span class="sc-row-wt">25%</span></span>${sPill(pmS)}</div><div class="sc-row"><span class="srow-lbl">&#x1F3CF; Hitter <span class="sc-row-wt">22%</span></span>${sPill(h.hs)} ${confB(h.hConf)}</div><div class="sc-row"><span class="srow-lbl">&#x26A1; Platoon <span class="sc-row-wt">18%</span></span>${sPill(plS)}</div><div class="sc-row"><span class="srow-lbl">&#x1F3DF;&#xFE0F; Park <span class="sc-row-wt">5%</span></span><span style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--text2)">${pf.toFixed(2)}&times;</span></div><div class="sc-row"><span class="srow-lbl">&#x2600;&#xFE0F; Weather <span class="sc-row-wt">2%</span></span><span style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--text2)">${Math.round(ws)}/100</span></div></div>`;
+  const bkd=`<div class="sc-bkd"><div class="sc-bkd-title">HR Score Breakdown</div><div class="sc-row"><span class="srow-lbl">Final HR Score</span>${sPill(h.hrScore,true)}</div><div class="sc-row"><span class="srow-lbl">⚾ Pitcher Risk <span class="sc-row-wt">28%</span></span>${riskPill(pr)} ${confB(pConf)}</div><div class="sc-row"><span class="srow-lbl">🎯 Mix wOBA <span class="sc-row-wt">25%</span></span>${sPill(pmS)}</div><div class="sc-row"><span class="srow-lbl">🏏 Hitter <span class="sc-row-wt">22%</span></span>${sPill(h.hs)} ${confB(h.hConf)}</div><div class="sc-row"><span class="srow-lbl">⚡ Platoon <span class="sc-row-wt">18%</span></span>${sPill(plS)}</div><div class="sc-row"><span class="srow-lbl">🏟️ Park <span class="sc-row-wt">5%</span></span><span style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--text2)">${pf.toFixed(2)}×</span></div><div class="sc-row"><span class="srow-lbl">☀️ Weather <span class="sc-row-wt">2%</span></span><span style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--text2)">${Math.round(ws)}/100</span></div></div>`;
   return l14H+`<div style="font-size:.63rem;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.09em;margin-bottom:6px;display:flex;align-items:center;gap:6px">Season Stats<span style="flex:1;height:1px;background:var(--bdr);display:inline-block"></span></div>`+sr+bkd;
 }
 
 function pitchTab(h){
   const ar=h.arsenal||{};const sp=h.pitchSplits||{};const pts=Object.entries(ar).sort((a,b)=>b[1]-a[1]);
   if(!pts.length)return`<div class="empty">No arsenal data<br><small>Loads from Baseball Savant</small></div>`;
-  const tr=pts.map(([pt,pct])=>{const nm=PN[pt]||pt;const cl=PC[pt]||'#607080';const hvp=sp[pt]||{};const bw=Math.min(48,Math.round(pct*.48));return`<tr><td><span style="color:${cl};font-weight:700">${nm}</span></td><td><span class="ubar" style="width:${bw}px;background:${cl}"></span> ${pct.toFixed(0)}%</td><td>${hcp(hvp.brl_pct,4,15)}</td><td>${hcp(hvp.hard_pct,32,52)}</td><td>${hcv(hvp.avg_ev,86,94)}</td><td>${hc(hvp.avg_la,8,18,true,1,'&deg;')}</td><td>${hcn(hvp.woba,.280,.400)}</td><td>${hcp(hvp.whiff_pct,18,35,false)}</td></tr>`;}).join('');
+  const tr=pts.map(([pt,pct])=>{const nm=PN[pt]||pt;const cl=PC[pt]||'#607080';const hvp=sp[pt]||{};const bw=Math.min(48,Math.round(pct*.48));return`<tr><td><span style="color:${cl};font-weight:700">${nm}</span></td><td><span class="ubar" style="width:${bw}px;background:${cl}"></span> ${pct.toFixed(0)}%</td><td>${hcp(hvp.brl_pct,4,15)}</td><td>${hcp(hvp.hard_pct,32,52)}</td><td>${hcv(hvp.avg_ev,86,94)}</td><td>${hc(hvp.avg_la,8,18,true,1,'°')}</td><td>${hcn(hvp.woba,.280,.400)}</td><td>${hcp(hvp.whiff_pct,18,35,false)}</td></tr>`;}).join('');
   const pm=calcPM(sp,ar);
-  return`<div style="font-size:.67rem;color:var(--dim);margin-bottom:6px">SP% = usage &middot; stats = hitter league-wide vs pitch</div><table class="ptbl"><thead><tr><th>Pitch</th><th>SP%</th><th>BRL%</th><th>HH%</th><th>EV</th><th>LA</th><th>wOBA</th><th>Whiff</th></tr></thead><tbody>${tr}</tbody></table><div class="comp-box"><div class="comp-lbl">Weighted vs Arsenal</div><div class="comp-grid"><div class="comp-item"><span class="comp-val">${hcn(pm.woba,.290,.390)}</span><span class="comp-key">wOBA</span></div><div class="comp-item"><span class="comp-val">${hcp(pm.brl_pct,4,15)}</span><span class="comp-key">BRL%</span></div><div class="comp-item"><span class="comp-val">${hcp(pm.hard_pct,32,52)}</span><span class="comp-key">HARD%</span></div><div class="comp-item"><span class="comp-val">${hcv(pm.avg_ev,86,94)}</span><span class="comp-key">EV</span></div></div></div>`;
+  return`<div style="font-size:.67rem;color:var(--dim);margin-bottom:6px">SP% = usage · stats = hitter league-wide vs pitch</div><table class="ptbl"><thead><tr><th>Pitch</th><th>SP%</th><th>BRL%</th><th>HH%</th><th>EV</th><th>LA</th><th>wOBA</th><th>Whiff</th></tr></thead><tbody>${tr}</tbody></table><div class="comp-box"><div class="comp-lbl">Weighted vs Arsenal</div><div class="comp-grid"><div class="comp-item"><span class="comp-val">${hcn(pm.woba,.290,.390)}</span><span class="comp-key">wOBA</span></div><div class="comp-item"><span class="comp-val">${hcp(pm.brl_pct,4,15)}</span><span class="comp-key">BRL%</span></div><div class="comp-item"><span class="comp-val">${hcp(pm.hard_pct,32,52)}</span><span class="comp-key">HARD%</span></div><div class="comp-item"><span class="comp-val">${hcv(pm.avg_ev,86,94)}</span><span class="comp-key">EV</span></div></div></div>`;
 }
 
 function platoonTab(h,spHand){
   const pl=h.platoon||{};if(!pl.R&&!pl.L)return`<div class="empty">Platoon data needs Streamlit backend</div>`;
-  const rows=['R','L'].map(hand=>{const sp=pl[hand]||{};const hl=hand===spHand?'plat-hl':'';const st=hand===spHand?'&#9733; ':'';return`<tr class="${hl}"><td>${st}${hand==='R'?'RHP':'LHP'}</td><td>${sp.pa??'—'}</td><td>${sp.hr??'—'}</td><td>${hcn(sp.ba,.215,.305)}</td><td>${hcn(sp.obp,.305,.385)}</td><td>${hcn(sp.slg,.320,.520)}</td><td>${hcn(sp.woba,.290,.390)}</td></tr>`;}).join('');
-  return`<table class="plat-tbl"><thead><tr><th>vs</th><th>PA</th><th>HR</th><th>AVG</th><th>OBP</th><th>SLG</th><th>wOBA</th></tr></thead><tbody>${rows}</tbody></table><div style="font-size:.66rem;color:var(--dim);margin-top:8px">&#9733; = today's matchup</div>`;
+  const rows=['R','L'].map(hand=>{const sp=pl[hand]||{};const hl=hand===spHand?'plat-hl':'';const st=hand===spHand?'★ ':'';return`<tr class="${hl}"><td>${st}${hand==='R'?'RHP':'LHP'}</td><td>${sp.pa??'—'}</td><td>${sp.hr??'—'}</td><td>${hcn(sp.ba,.215,.305)}</td><td>${hcn(sp.obp,.305,.385)}</td><td>${hcn(sp.slg,.320,.520)}</td><td>${hcn(sp.woba,.290,.390)}</td></tr>`;}).join('');
+  return`<table class="plat-tbl"><thead><tr><th>vs</th><th>PA</th><th>HR</th><th>AVG</th><th>OBP</th><th>SLG</th><th>wOBA</th></tr></thead><tbody>${rows}</tbody></table><div style="font-size:.66rem;color:var(--dim);margin-top:8px">★ = today's matchup</div>`;
 }
 
 /* PITCHERS PAGE */
@@ -513,10 +513,10 @@ function renderPitchers(){
   const sps=[{name:g.homeSpName,hand:S.pHands.home,pRow:S.pRows.away,arsenal:S.arsenals.away,faces:g.away},{name:g.awaySpName,hand:S.pHands.away,pRow:S.pRows.home,arsenal:S.arsenals.home,faces:g.home}];
   document.getElementById('spBd').innerHTML=sps.map(sp=>{
     const risk=calcPR(sp.pRow);const conf=calcPC(sp.pRow);const p=sp.pRow||{};
-    const hasD=Object.values(p).some(v=>v!=null);const avgN=hasD?'':'<span style="font-size:.62rem;color:var(--amber)"> &#9733; lg avg</span>';
+    const hasD=Object.values(p).some(v=>v!=null);const avgN=hasD?'':'<span style="font-size:.62rem;color:var(--amber)"> ★ lg avg</span>';
     const sr=[['Barrel% allow','brl_pct',2,14,true,1,'%'],['Hard Hit% allow','hard_hit_pct',28,50,true,1,'%'],['EV allowed','avg_ev',83,92,true,1,' mph'],['K%','k_pct',14,35,false,1,'%'],['BB%','bb_pct',4,12,true,1,'%'],['FB% allow','fb_pct',20,48,true,1,'%'],['HR/FB%','hr_per_fb',5,20,true,1,'%'],['ERA','era',2,5,false,2,''],['FIP','fip',2,5,false,2,'']].map(([l,c,lo,hi,hib,dec,suf])=>`<div class="srow"><span class="srow-lbl">${l}</span>${hc(p[c],lo,hi,hib,dec,suf)}</div>`).join('');
     const arsH=Object.entries(sp.arsenal).sort((a,b)=>b[1]-a[1]).map(([pt,pct])=>{const c=PC[pt]||'#607080';const nm=PN[pt]||pt;const bw=Math.min(80,Math.round(pct*.8));return`<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:3px"><span style="color:${c};font-weight:700">${nm}</span><span style="font-family:'JetBrains Mono',monospace;color:var(--text2)">${pct.toFixed(1)}%</span></div><div style="background:var(--bdr);border-radius:3px;height:5px"><div style="background:${c};width:${bw}%;height:5px;border-radius:3px"></div></div></div>`;}).join('')||'<span style="color:var(--dim);font-size:.75rem">No arsenal data</span>';
-    return`<div class="sp-bd"><div class="sp-bd-head"><div style="font-weight:700;font-size:1rem;color:var(--text);flex:1">${sp.name}</div><span style="font-size:.68rem;color:var(--muted)">${sp.hand==='L'?'LHP':'RHP'} &middot; vs ${sp.faces}</span>${riskPill(risk)}${avgN} ${confB(conf)}</div><div class="sp-bd-body"><div style="display:flex;gap:14px"><div style="flex:1"><div class="sec-lbl" style="padding:0 0 8px">Profile</div>${sr}</div><div style="flex:1"><div class="sec-lbl" style="padding:0 0 8px">Arsenal</div>${arsH}</div></div></div></div>`;
+    return`<div class="sp-bd"><div class="sp-bd-head"><div style="font-weight:700;font-size:1rem;color:var(--text);flex:1">${sp.name}</div><span style="font-size:.68rem;color:var(--muted)">${sp.hand==='L'?'LHP':'RHP'} · vs ${sp.faces}</span>${riskPill(risk)}${avgN} ${confB(conf)}</div><div class="sp-bd-body"><div style="display:flex;gap:14px"><div style="flex:1"><div class="sec-lbl" style="padding:0 0 8px">Profile</div>${sr}</div><div style="flex:1"><div class="sec-lbl" style="padding:0 0 8px">Arsenal</div>${arsH}</div></div></div></div>`;
   }).join('');
 }
 
