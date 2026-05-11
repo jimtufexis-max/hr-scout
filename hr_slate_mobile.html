@@ -771,6 +771,91 @@ async function pickGame(idx){
   const[pRowAway,pRowHome]=await Promise.all([buildPRow(g.homeSpId),buildPRow(g.awaySpId)]);
   S.pRows={away:pRowAway,home:pRowHome};renderSpCard();
 
+  async function getL14Stats(batterId, season){
+    /**
+     * Fetch last 14 days of Savant pitch-by-pitch CSV for a batter.
+     * Computes brl%, hard%, avg_ev, avg_la from raw rows.
+     * Returns {brl_pct, hard_pct, avg_ev, avg_la, hr, woba, games} or null.
+     */
+    const pid = String(batterId);
+    const endDate = new Date();
+    const startDate = new Date(); startDate.setDate(startDate.getDate() - 14);
+    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+    const url = `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fmt(startDate)}&game_date_lt=${fmt(endDate)}&type=details&`;
+    const txt = await proxiedText(url);
+    if(!txt || txt.length < 100) return null;
+
+    const rows = txt.trim().split('\n');
+    if(rows.length < 2) return null;
+    const hdrs = rows[0].split(',').map(h=>h.trim().replace(/"/g,'').toLowerCase());
+
+    const get = (row, key) => {
+      const idx = hdrs.indexOf(key);
+      return idx >= 0 ? row[idx]?.trim().replace(/"/g,'') : null;
+    };
+
+    const AB_EVENTS = new Set(['single','double','triple','home_run','field_out',
+      'grounded_into_double_play','strikeout','strikeout_double_play','force_out',
+      'field_error','fielders_choice','fielders_choice_out','double_play',
+      'triple_play','sac_fly','sac_bunt']);
+
+    let evs=[], las=[], barrels=0, hrs=0, ab=0, bb=0, hbp=0, hits=0;
+    let singles=0, doubles=0, triples=0, gameDates=new Set();
+
+    for(let i=1;i<rows.length;i++){
+      const cols = rows[i].split(',').map(c=>c.trim().replace(/"/g,''));
+      const ev  = parseFloat(get(cols,'launch_speed'));
+      const la  = parseFloat(get(cols,'launch_angle'));
+      const evt = get(cols,'events')||'';
+      const gd  = get(cols,'game_date')||'';
+      if(gd) gameDates.add(gd);
+
+      if(!isNaN(ev) && ev > 0){
+        evs.push(ev);
+        if(!isNaN(la)) las.push(la);
+        if(ev >= 95) barrels++; // using hard hit as proxy barrel count below
+        // Real barrel: EV>=98 + angle in range
+        if(ev >= 98 && !isNaN(la)){
+          const maxLa = Math.min(50, 30 + (ev-98));
+          const minLa = Math.max(8, 26 - (ev-98));
+          if(la >= minLa && la <= maxLa) barrels++;
+        }
+      }
+      if(AB_EVENTS.has(evt)){
+        ab++;
+        if(evt==='home_run'){hrs++;hits++;}
+        else if(evt==='single'){singles++;hits++;}
+        else if(evt==='double'){doubles++;hits++;}
+        else if(evt==='triple'){triples++;hits++;}
+      }
+      if(evt==='walk') bb++;
+      if(evt==='hit_by_pitch') hbp++;
+    }
+
+    const nBbl = evs.length; // batted balls with EV
+    const pa = ab + bb + hbp;
+    if(nBbl === 0 && pa === 0) return null;
+
+    // wOBA
+    const woba = pa > 0 ? (0.69*bb + 0.72*hbp + 0.89*singles + 1.27*doubles + 1.62*triples + 2.10*hrs) / pa : null;
+
+    // Reset barrels — counted twice above, recount properly
+    // Just use hard hit (EV>=95) as the reliable metric
+    const hardCount = evs.filter(e=>e>=95).length;
+
+    return {
+      l14_brl:   nBbl>0 ? Math.round(barrels/nBbl*1000)/10 : null,
+      l14_hard:  nBbl>0 ? Math.round(hardCount/nBbl*1000)/10 : null,
+      l14_ev:    evs.length>0 ? Math.round(evs.reduce((a,b)=>a+b,0)/evs.length*10)/10 : null,
+      l14_la:    las.length>0 ? Math.round(las.reduce((a,b)=>a+b,0)/las.length*10)/10 : null,
+      l14_hr:    hrs,
+      l14_woba:  woba ? Math.round(woba*1000)/1000 : null,
+      l14_games: gameDates.size,
+      l14_pa:    pa,
+    };
+  }
+
   async function buildHitter(h,spHand,pRow,arsenal){
     const sid=String(h.id);let stats={};
     // Layer 1: MLB Stats API — AVG/OBP/SLG/HR/K%/BB%
@@ -778,7 +863,7 @@ async function pickGame(idx){
       const d=await getPlayerStats(sid,yr);
       if(d?.hitting){stats=mapHitter(d.hitting);break;}
     }
-    // Layer 2: FanGraphs — pull%, FB%, SwStr%, O-Swing%, barrel%, hard hit%, EV, LA
+    // Layer 2: FanGraphs — pull%, FB%, SwStr%, barrel%, hard hit%, EV, LA
     const fg=fb[sid];
     if(fg){
       if(fg.pull_pct!=null)   stats.pull_pct=fg.pull_pct;
@@ -789,7 +874,7 @@ async function pickGame(idx){
       if(fg.avg_ev!=null)     stats.avg_ev=fg.avg_ev;
       if(fg.avg_la!=null)     stats.avg_la=fg.avg_la;
     }
-    // Layer 3: Savant Statcast — overrides FG for Statcast metrics (more precise)
+    // Layer 3: Savant Statcast season — overrides FG
     const sv=sb[sid];
     if(sv){
       if(sv.barrel_pct!=null)   stats.barrel_pct=sv.barrel_pct;
@@ -798,6 +883,10 @@ async function pickGame(idx){
       if(sv.avg_la!=null)       stats.avg_la=sv.avg_la;
       if(sv.sweet_spot_pct!=null)stats.sweet_spot_pct=sv.sweet_spot_pct;
     }
+    // Layer 4: Last 14 days from Savant CSV
+    const l14 = await getL14Stats(sid, 2026) || await getL14Stats(sid, 2025);
+    if(l14) Object.assign(stats, l14);
+
     return{...h,...stats,spHand,pRow,arsenal,pitchSplits:{},platoon:{},
            hs:null,pm:{},platWoba:null,hrScore:null};
   }
@@ -881,10 +970,13 @@ function renderHitters(){
     const rkCls=i===0?'r1':i===1?'r2':i===2?'r3':'';
     const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
     const minis=[
-      h.barrel_pct!=null?`<span class="mtag ${mtCls(h.barrel_pct,4,15,true)}">${h.barrel_pct.toFixed(1)}% Brl</span>`:'',
-      h.avg_la!=null?`<span class="mtag ${mtCls(h.avg_la,8,18,true)}">${h.avg_la.toFixed(1)}° LA</span>`:'',
-      h.pull_pct!=null?`<span class="mtag ${mtCls(h.pull_pct,30,48,true)}">${h.pull_pct.toFixed(1)}% Pull</span>`:'',
-      h.hard_hit_pct!=null?`<span class="mtag ${mtCls(h.hard_hit_pct,32,52,true)}">${h.hard_hit_pct.toFixed(1)}% HH</span>`:'',
+      h.l14_brl!=null?`<span class="mtag ${mtCls(h.l14_brl,4,15,true)}">${h.l14_brl.toFixed(1)}% Brl L14</span>`:
+        (h.barrel_pct!=null?`<span class="mtag ${mtCls(h.barrel_pct,4,15,true)}">${h.barrel_pct.toFixed(1)}% Brl</span>`:''),
+      h.l14_ev!=null?`<span class="mtag ${mtCls(h.l14_ev,86,94,true)}">${h.l14_ev.toFixed(1)} EV L14</span>`:
+        (h.avg_ev!=null?`<span class="mtag ${mtCls(h.avg_ev,86,94,true)}">${h.avg_ev.toFixed(1)} EV</span>`:''),
+      h.l14_la!=null?`<span class="mtag ${mtCls(h.l14_la,8,18,true)}">${h.l14_la.toFixed(1)}° LA L14</span>`:
+        (h.avg_la!=null?`<span class="mtag ${mtCls(h.avg_la,8,18,true)}">${h.avg_la.toFixed(1)}° LA</span>`:''),
+      h.l14_hr!=null&&h.l14_hr>0?`<span class="mtag hcg">${h.l14_hr} HR L14</span>`:'',
     ].filter(Boolean).join('');
     return`
       <div class="h-row${isOpen?' open':''}" onclick="toggleH('${h.id}')">
@@ -953,7 +1045,22 @@ function statsTab(h,spName,spHand){
   const pmS=pm?.woba!=null?Math.round(Math.max(0,Math.min(100,(pm.woba-0.220)/(0.420-0.220)*100))):null;
   const plS=h.platWoba!=null?Math.round(Math.max(0,Math.min(100,(h.platWoba-0.220)/(0.420-0.220)*100))):null;
 
-  return rows+`
+  return (h.l14_brl!=null||h.l14_ev!=null||h.l14_hr!=null?`
+    <div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.2);
+      border-radius:8px;padding:8px 10px;margin-bottom:8px">
+      <div style="font-size:.61rem;font-weight:700;color:var(--accent);
+        text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px">
+        🔥 Last 14 Days${h.l14_games?` · ${h.l14_games}G`:''} ${h.l14_pa?`· ${h.l14_pa}PA`:''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${h.l14_brl!=null?`<div style="text-align:center"><span style="display:block">${hcp(h.l14_brl,4,15)}</span><span style="font-size:.58rem;color:var(--muted)">BRL%</span></div>`:''}
+        ${h.l14_hard!=null?`<div style="text-align:center"><span style="display:block">${hcp(h.l14_hard,32,52)}</span><span style="font-size:.58rem;color:var(--muted)">HARD%</span></div>`:''}
+        ${h.l14_ev!=null?`<div style="text-align:center"><span style="display:block">${hcv(h.l14_ev,86,94)}</span><span style="font-size:.58rem;color:var(--muted)">EV</span></div>`:''}
+        ${h.l14_la!=null?`<div style="text-align:center"><span style="display:block">${hc(h.l14_la,8,18,true,1,'°')}</span><span style="font-size:.58rem;color:var(--muted)">LA</span></div>`:''}
+        ${h.l14_woba!=null?`<div style="text-align:center"><span style="display:block">${hcn(h.l14_woba,.290,.390)}</span><span style="font-size:.58rem;color:var(--muted)">wOBA</span></div>`:''}
+        ${h.l14_hr!=null?`<div style="text-align:center"><span style="display:block;font-family:'DM Mono',monospace;font-size:.8rem;font-weight:700;color:${h.l14_hr>0?'#fbbf24':'var(--muted)'}">${h.l14_hr}</span><span style="font-size:.58rem;color:var(--muted)">HR</span></div>`:''}
+      </div>
+    </div>`:'') + rows+`
     <div class="sc-bkd" style="margin-top:10px">
       <strong>HR Score · ${sPill(h.hrScore,true)}</strong><br>
       Pitcher Risk ${sPill(pr)} 28% &nbsp; Mix wOBA ${sPill(pmS)} 25%<br>
