@@ -555,8 +555,8 @@ async function getFgBatters(season){
       const pct=v=>{if(v==null)return null;const f=parseFloat(v);if(isNaN(f))return null;return Math.abs(f)<=1?Math.round(f*1000)/10:Math.round(f*10)/10;};
       const n=v=>{if(v==null)return null;const f=parseFloat(v);return isNaN(f)?null:f;};
       out[pid]={
-        pull_pct:   pct(r['Pull%']??r['pull_pct']??r.pull),
-        fb_pct:     pct(r['FB%']??r['fb_pct']??r.fb),
+        pull_pct:   pct(r['Pull%']??r['pull_pct']??r.pull??r['Pull']),
+        fb_pct:     pct(r['FB%']??r['fb_pct']??r.fb??r['F-Strike%']??r['flyBall']),
         gb_pct:     pct(r['GB%']??r['gb_pct']??r.gb),
         swstr_pct:  pct(r['SwStr%']??r['swstr_pct']??r.swstr),
         o_swing_pct:pct(r['O-Swing%']??r['o_swing_pct']),
@@ -884,7 +884,7 @@ function renderHitters(){
       h.barrel_pct!=null?`<span class="mtag ${mtCls(h.barrel_pct,4,15,true)}">${h.barrel_pct.toFixed(1)}% Brl</span>`:'',
       h.avg_la!=null?`<span class="mtag ${mtCls(h.avg_la,8,18,true)}">${h.avg_la.toFixed(1)}° LA</span>`:'',
       h.pull_pct!=null?`<span class="mtag ${mtCls(h.pull_pct,30,48,true)}">${h.pull_pct.toFixed(1)}% Pull</span>`:'',
-      h.fb_pct!=null?`<span class="mtag ${mtCls(h.fb_pct,22,42,true)}">${h.fb_pct.toFixed(1)}% FB</span>`:'',
+      h.hard_hit_pct!=null?`<span class="mtag ${mtCls(h.hard_hit_pct,32,52,true)}">${h.hard_hit_pct.toFixed(1)}% HH</span>`:'',
     ].filter(Boolean).join('');
     return`
       <div class="h-row${isOpen?' open':''}" onclick="toggleH('${h.id}')">
