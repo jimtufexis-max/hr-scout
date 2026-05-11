@@ -526,11 +526,24 @@ async function px(url) {
   return null;
 }
 async function pxt(url) {
-  try { const r=await fetch(url,{signal:AbortSignal.timeout(6000)}); if(r.ok) return await r.text(); } catch {}
+  // Direct fetch first
+  try {
+    const r = await fetch(url, {signal:AbortSignal.timeout(8000)});
+    if (r.ok) { const t = await r.text(); if (t && t.length > 50) return t; }
+  } catch {}
+
+  // Try each proxy
   for (const mk of PROX) {
-    try { const r=await fetch(mk(url),{signal:AbortSignal.timeout(8000)});
-      if (r.ok) { const t=await r.text();
-        try {const j=JSON.parse(t); if(j.contents) return j.contents;} catch {} return t; }
+    try {
+      const r = await fetch(mk(url), {signal:AbortSignal.timeout(12000)});
+      if (r.ok) {
+        const t = await r.text();
+        if (!t || t.length < 50) continue;
+        try { const j=JSON.parse(t); if (j.contents) return j.contents; } catch {}
+        // Reject obvious error responses
+        if (t.startsWith('<!DOCTYPE') || t.startsWith('<html')) continue;
+        return t;
+      }
     } catch {}
   }
   return null;
@@ -757,68 +770,69 @@ async function getL14(bid, season) {
     l14_hr:hrs,l14_woba:woba?Math.round(woba*1000)/1000:null,l14_games:dates.size,l14_pa:pa};
 }
 
-// AB log for AB Explorer
-// Uses Savant statcast_search with hfAB filter so only AB-ending pitches come back
-// Much smaller payload than full pitch-by-pitch, works through CORS proxy
+// AB log — tries multiple Savant URL formats + MLB Stats API game log fallback
 async function getABLog(bid, season, pHand=null, pitchTypes=null) {
   if (!bid) return [];
   const pid = String(bid);
-
-  // AB result types to filter server-side (reduces payload ~10x vs all pitches)
-  const abFilter = [
-    'single','double','triple','home_run',
-    'field_out','grounded_into_double_play','strikeout','strikeout_double_play',
-    'force_out','field_error','fielders_choice','fielders_choice_out',
-    'double_play','sac_fly','sac_bunt','walk','hit_by_pitch',
-  ].join('%7C');
-
-  // Cache key includes season
   const cacheKey = `ab-${pid}-${season}`;
+
   if (!_svc[cacheKey]) {
-    // Try date-windowed first (faster), fall back to season
     const now = new Date();
-    const st60 = new Date(); st60.setDate(st60.getDate()-60);
-    const st120 = new Date(); st120.setDate(st120.getDate()-120);
+    const st = new Date(); st.setDate(st.getDate()-90);
     const fd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
-    const urls = [
-      // 60-day window with AB filter — smallest, fastest
-      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st60)}&game_date_lt=${fd(now)}&hfAB=${abFilter}&type=details&`,
-      // 120-day window
-      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st120)}&game_date_lt=${fd(now)}&hfAB=${abFilter}&type=details&`,
-      // Full season with AB filter
-      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&hfAB=${abFilter}&type=details&`,
+    // Strategy 1: Savant search CSV with hfAB filter (AB-ending pitches only, small payload)
+    const savantUrls = [
+      // With date window (faster)
+      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st)}&game_date_lt=${fd(now)}&type=details&`,
+      // Full season
+      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&type=details&`,
+      // Alternate format sometimes used
+      `https://baseballsavant.mlb.com/statcast_search/csv?hfGT=R%7C&hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&type=details&`,
     ];
 
-    for (const url of urls) {
+    for (const url of savantUrls) {
       const txt = await pxt(url);
-      if (txt && txt.length > 200 && txt.includes(',')) {
-        // Verify it looks like a real CSV (has headers with known columns)
-        const firstLine = txt.split('\n')[0];
-        if (firstLine.toLowerCase().includes('pitch_type') || firstLine.toLowerCase().includes('events') || firstLine.toLowerCase().includes('game_date')) {
-          _svc[cacheKey] = txt;
-          break;
-        }
+      if (!txt || txt.length < 100) continue;
+      // Must look like a CSV with headers we recognize
+      const firstLine = txt.split('\n')[0].toLowerCase();
+      if (firstLine.includes('pitch_type') || firstLine.includes('game_date') || firstLine.includes('events')) {
+        _svc[cacheKey] = {type:'csv', data:txt};
+        break;
+      }
+    }
+
+    // Strategy 2: MLB Stats API play-by-play (works through API, no CORS issue)
+    if (!_svc[cacheKey]) {
+      const pbpData = await fetchMLBPlayLog(pid, season);
+      if (pbpData && pbpData.length > 0) {
+        _svc[cacheKey] = {type:'mlb', data:pbpData};
       }
     }
   }
 
-  const txt = _svc[cacheKey];
-  if (!txt || txt.length < 100) return [];
+  if (!_svc[cacheKey]) return [];
 
+  const cached = _svc[cacheKey];
+  if (cached.type === 'csv') return parseABCSV(cached.data, pHand, pitchTypes);
+  if (cached.type === 'mlb') return filterABRows(cached.data, pHand, pitchTypes);
+  return [];
+}
+
+// Parse Savant CSV into AB rows
+function parseABCSV(txt, pHand, pitchTypes) {
   const rows = txt.trim().split('\n');
   if (rows.length < 2) return [];
   const hdrs = rows[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
 
-  const g = (row, k) => {
+  const g = (cols, k) => {
     const i = hdrs.indexOf(k);
-    return i >= 0 ? (row[i]||'').trim().replace(/"/g,'') : null;
+    return i >= 0 ? (cols[i]||'').trim().replace(/"/g,'') : null;
   };
 
-  // All AB-ending events (client-side filter as backup)
   const AB_EVENTS = new Set([
-    'single','double','triple','home_run',
-    'field_out','grounded_into_double_play','strikeout','strikeout_double_play',
+    'single','double','triple','home_run','field_out',
+    'grounded_into_double_play','strikeout','strikeout_double_play',
     'force_out','field_error','fielders_choice','fielders_choice_out',
     'double_play','triple_play','sac_fly','sac_bunt',
     'walk','hit_by_pitch','catcher_interf',
@@ -826,60 +840,80 @@ async function getABLog(bid, season, pHand=null, pitchTypes=null) {
 
   const out = [];
   for (let i = 1; i < rows.length; i++) {
-    const line = rows[i].trim();
-    if (!line) continue;
+    const line = rows[i].trim(); if (!line) continue;
     const cols = line.split(',');
-    if (cols.length < 5) continue;
-
     const evt = (g(cols,'events')||'').toLowerCase().trim();
     if (!evt || !AB_EVENTS.has(evt)) continue;
 
     const arm = g(cols,'p_throws')||'?';
     if (pHand && arm !== pHand) continue;
-
     const pt = (g(cols,'pitch_type')||'').toUpperCase();
     if (pitchTypes && pitchTypes.length && !pitchTypes.includes(pt)) continue;
 
     const ev   = parseFloat(g(cols,'launch_speed'));
     const la   = parseFloat(g(cols,'launch_angle'));
     const dist = parseFloat(g(cols,'hit_distance_sc'));
-    const bs   = parseFloat(g(cols,'bat_speed'));
     const velo = parseFloat(g(cols,'release_speed'));
     const gd   = g(cols,'game_date')||'';
-    const pitcher = g(cols,'player_name')||'—';
+    const pitcher = g(cols,'player_name')||g(cols,'pitcher_name')||'—';
 
-    // Barrel check
     let isBrl = false;
-    if (!isNaN(ev) && ev >= 98 && !isNaN(la)) {
-      const mx = Math.min(50, 30+(ev-98));
-      const mn = Math.max(8,  26-(ev-98));
-      if (la >= mn && la <= mx) isBrl = true;
-    }
-    const isHR = evt === 'home_run';
-
+    if (!isNaN(ev)&&ev>=98&&!isNaN(la)){const mx=Math.min(50,30+(ev-98));const mn=Math.max(8,26-(ev-98));if(la>=mn&&la<=mx)isBrl=true;}
+    const isHR = evt==='home_run';
     let hrPk = '0/30';
-    if (isHR) hrPk = '✓ HR';
-    else if (!isNaN(dist) && dist > 0) {
-      hrPk = dist>=430?'30/30':dist>=410?'25/30':dist>=390?'18/30':dist>=370?'10/30':dist>=350?'4/30':dist>=330?'1/30':'0/30';
-    }
+    if (isHR) hrPk='✓ HR';
+    else if (!isNaN(dist)&&dist>0) hrPk=dist>=430?'30/30':dist>=410?'25/30':dist>=390?'18/30':dist>=370?'10/30':dist>=350?'4/30':dist>=330?'1/30':'0/30';
 
     out.push({
-      date:   gd.length >= 10 ? gd.slice(5,10) : gd,
-      pitcher, arm, pt,
-      ptNm:   PN[pt] || pt || '—',
-      ev:     isNaN(ev)   ? null : Math.round(ev*10)/10,
-      la:     isNaN(la)   ? null : Math.round(la*10)/10,
-      dist:   isNaN(dist) ? null : Math.round(dist),
-      bs:     isNaN(bs)   ? null : Math.round(bs*10)/10,
-      velo:   isNaN(velo) ? null : Math.round(velo*10)/10,
-      evt:    evt.replace(/_/g,' '),
-      isHR, isBrl, hrPk,
+      date: gd.length>=10?gd.slice(5,10):gd, pitcher, arm, pt,
+      ptNm: PN[pt]||pt||'—',
+      ev:   isNaN(ev)?null:Math.round(ev*10)/10,
+      la:   isNaN(la)?null:Math.round(la*10)/10,
+      dist: isNaN(dist)?null:Math.round(dist),
+      bs:   null,
+      velo: isNaN(velo)?null:Math.round(velo*10)/10,
+      evt:  evt.replace(/_/g,' '), isHR, isBrl, hrPk,
     });
   }
-
-  // Sort newest first
-  out.sort((a,b) => b.date.localeCompare(a.date));
+  out.sort((a,b)=>b.date.localeCompare(a.date));
   return out;
+}
+
+// MLB Stats API play log fallback — game-by-game, no pitch data but still useful
+async function fetchMLBPlayLog(pid, season) {
+  try {
+    const url = `${MLB_API}/people/${pid}/stats?stats=gameLog&group=hitting&season=${season}&gameType=R`;
+    const d = await px(url);
+    const splits = d?.stats?.[0]?.splits||[];
+    if (!splits.length) return null;
+    // Convert game-log splits to AB-like rows (no pitch detail but at least shows results)
+    const out = [];
+    for (const s of splits) {
+      const stat = s.stat||{};
+      const gd = s.date||'';
+      const opp = s.opponent?.abbreviation||'—';
+      // Create one row per HR in this game
+      const hrs = parseInt(stat.homeRuns)||0;
+      for (let i=0;i<hrs;i++) {
+        out.push({date:gd.slice(5,10),pitcher:opp+' pitcher',arm:'?',pt:'?',ptNm:'—',
+          ev:null,la:null,dist:null,bs:null,velo:null,
+          evt:'home run',isHR:true,isBrl:false,hrPk:'✓ HR'});
+      }
+      // And one row per hit
+      const hits = (parseInt(stat.hits)||0) - hrs;
+      for (let i=0;i<hits;i++) {
+        out.push({date:gd.slice(5,10),pitcher:opp+' pitcher',arm:'?',pt:'?',ptNm:'—',
+          ev:null,la:null,dist:null,bs:null,velo:null,
+          evt:'hit',isHR:false,isBrl:false,hrPk:'0/30'});
+      }
+    }
+    return out.length ? out : null;
+  } catch { return null; }
+}
+
+function filterABRows(rows, pHand, pitchTypes) {
+  // MLB play log rows have no pitch type/arm data, so ignore those filters
+  return rows;
 }
 
 /* ══════════════════════════════════════════════════════════
