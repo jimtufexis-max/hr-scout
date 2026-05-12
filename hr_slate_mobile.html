@@ -362,17 +362,25 @@ const MLB_API = 'https://statsapi.mlb.com/api/v1';
 // ══════════════════════════════════════════════════════════
 
 // !! PASTE YOUR WORKER URL HERE after deploying !!
-const WORKER_URL = 'https://d1-template.jimtufexis.workers.dev';
+const WORKER_URL = 'https://d1-template.jimtufexis.workers.dev/';
 
-// In-memory client cache so we don't re-fetch mid-session
+// In-memory client cache
 const _wc = {};
-async function wfetch(path) {
-  if (_wc[path] && (Date.now() - _wc[path].ts < 25 * 60 * 1000)) return _wc[path].val;
-  const r = await fetch(WORKER_URL + path);
+async function wfetch(path, ttl=25*60*1000) {
+  if (_wc[path] && (Date.now() - _wc[path].ts < ttl)) return _wc[path].val;
+  const r = await fetch(WORKER_URL + path, {signal: AbortSignal.timeout(12000)});
   if (!r.ok) throw new Error(`Worker ${r.status}: ${path}`);
   const val = await r.json();
   _wc[path] = {val, ts: Date.now()};
   return val;
+}
+
+// Pre-warm the worker on page load (eliminates cold-start delay when user picks a game)
+function prewarm() {
+  const today = ds(S.date);
+  fetch(`${WORKER_URL}/slate?date=${today}`).catch(()=>{});          // warm + cache games
+  fetch(`${WORKER_URL}/savant-batters?season=2026`).catch(()=>{});   // warm leaderboard
+  fetch(`${WORKER_URL}/fg-batters?season=2026`).catch(()=>{});       // warm FG
 }
 
 async function getGames(ds)           { return wfetch(`/games?date=${ds}`); }
@@ -477,16 +485,36 @@ function setTeam(t){
    LOAD SLATE
 ══════════════════════════════════════════════════════════ */
 async function loadSlate() {
-  document.getElementById('dTxt').textContent=dlbl(S.date);
-  document.getElementById('gameGrid').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading…</div>';
-  document.getElementById('hList').innerHTML='<div class="empty">Select a game above to begin</div>';
-  document.getElementById('spArea').innerHTML='';
-  document.getElementById('wxBar').innerHTML='';
-  document.getElementById('sortStrip').innerHTML='';
-  document.getElementById('teamTog').style.display='none';
-  const games=await getGames(ds(S.date));
-  S.games=games;
-  if (!games.length){document.getElementById('gameGrid').innerHTML='<div class="empty">No games found</div>';return;}
+  document.getElementById('dTxt').textContent = dlbl(S.date);
+  document.getElementById('gameGrid').innerHTML = '<div class="ldr"><div class="spin"></div><br>Loading…</div>';
+  document.getElementById('hList').innerHTML   = '<div class="empty">Select a game above to begin</div>';
+  document.getElementById('spArea').innerHTML  = '';
+  document.getElementById('wxBar').innerHTML   = '';
+  document.getElementById('sortStrip').innerHTML = '';
+  document.getElementById('teamTog').style.display = 'none';
+
+  // /slate returns games + weather + park factors in one fast call
+  let slateGames = [];
+  try {
+    slateGames = await wfetch(`/slate?date=${ds(S.date)}`, 5*60*1000);
+  } catch(e) {
+    document.getElementById('gameGrid').innerHTML = `<div class="empty">Failed to load — check WORKER_URL is set<br><small>${e.message}</small></div>`;
+    return;
+  }
+
+  S.games = slateGames;
+  // Store weather+park keyed by game pk for fast access in pickGame
+  S._slateWeather = {};
+  S._slatePark    = {};
+  for (const g of slateGames) {
+    S._slateWeather[g.pk] = g.weather;
+    S._slatePark[g.pk]    = g.parkFactor;
+  }
+
+  if (!slateGames.length) {
+    document.getElementById('gameGrid').innerHTML = '<div class="empty">No games today</div>';
+    return;
+  }
   renderGameChips();
 }
 
@@ -505,23 +533,12 @@ async function pickGame(idx) {
   S.game=S.games[idx];S.openId=null;
   S.hitters={away:[],home:[]};S.pRows={away:null,home:null};S.arsenals={away:{},home:{}};
   renderGameChips();
-  const g=S.game; const pf=PARK[g.home]||1.00;
-
-  // Fire all bulk data fetches in parallel immediately — worker has these cached
-  const bulkFetch = Promise.all([
-    getWx(g.venue),
-    getSB(2026), getSP(2026), getFB(2026), getFP(2026),
-    getPH(g.awaySpId), getPH(g.homeSpId),
-    getArsenal(g.awaySpId,2026), getArsenal(g.homeSpId,2026),
-    getRoster(g.away), getRoster(g.home),
-  ]);
-
-  document.getElementById('hList').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading…</div>';
-
-  const [w, sb, sp, fb, fp, awH, hmH, awA, hmA, awR, hmR] = await bulkFetch;
-
-  // Weather
-  S.weather=w; const ws=wxS(w);
+  const g = S.game;
+  // Use weather + park already loaded by /slate — no extra round trip
+  const pf = S._slatePark?.[g.pk] || PARK[g.home] || 1.00;
+  const w  = S._slateWeather?.[g.pk] || {temp:72,rain:0,wind:0,wdir:0};
+  S.weather = w;
+  const ws = wxS(w);
   document.getElementById('wxBar').innerHTML=[
     ['🌡️',`${Math.round(w.temp)}°F`,'Temp'],
     ['💨',wLbl(w.wind,w.wdir),'Wind'],
@@ -530,11 +547,21 @@ async function pickGame(idx) {
     ['☀️',`${Math.round(ws)}/100`,'Wx Score'],
   ].map(([ic,v,l])=>`<div class="wc"><span class="wv">${ic} ${v}</span><span class="wk">${l}</span></div>`).join('');
 
-  // Fallback to 2025 if 2026 data thin
-  const savB=Object.keys(sb).length?sb:(await getSB(2025));
-  const savP=Object.keys(sp).length?sp:(await getSP(2025));
-  const fgB=Object.keys(fb).length?fb:(await getFB(2025));
-  const fgP=Object.keys(fp).length?fp:(await getFP(2025));
+  document.getElementById('hList').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading…</div>';
+
+  // Fire everything in parallel — worker has leaderboards cached from prewarm
+  const [sb26, sp26, fb26, fp26, awH, hmH, awA, hmA, awR, hmR] = await Promise.all([
+    getSB(2026), getSP(2026), getFB(2026), getFP(2026),
+    getPH(g.awaySpId), getPH(g.homeSpId),
+    getArsenal(g.awaySpId,2026), getArsenal(g.homeSpId,2026),
+    getRoster(g.away), getRoster(g.home),
+  ]);
+
+  // Fallback to 2025 if 2026 leaderboard is thin (early season)
+  const savB = Object.keys(sb26).length > 10 ? sb26 : (await getSB(2025).catch(()=>sb26));
+  const savP = Object.keys(sp26).length > 10 ? sp26 : (await getSP(2025).catch(()=>sp26));
+  const fgB  = Object.keys(fb26).length > 10 ? fb26 : (await getFB(2025).catch(()=>fb26));
+  const fgP  = Object.keys(fp26).length > 10 ? fp26 : (await getFP(2025).catch(()=>fp26));
 
   // Hands + arsenals
   S.pHands={away:awH, home:hmH};
@@ -1065,6 +1092,7 @@ function renderABResults(){
 /* ══════════════════════════════════════════════════════════
    INIT
 ══════════════════════════════════════════════════════════ */
+prewarm();   // fire background fetches immediately to warm worker cache
 loadSlate();
 </script>
 </body>
