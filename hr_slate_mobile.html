@@ -361,76 +361,93 @@ const MLB_API = 'https://statsapi.mlb.com/api/v1';
 //   Change WORKER_URL after deploying hr_scout_worker.js
 // ══════════════════════════════════════════════════════════
 
-// !! PASTE YOUR WORKER URL HERE after deploying !!
-const WORKER_URL = 'https://bright-fly-47.deno.dev';
-
-// Test connectivity on load and show status
-async function testWorker() {
-  try {
-    const r = await fetch(WORKER_URL + '/', {signal: AbortSignal.timeout(8000)});
-    console.log('Worker status:', r.status, r.ok ? 'OK' : 'FAIL');
-    const t = await r.text();
-    console.log('Worker response:', t.slice(0,100));
-    return r.ok;
-  } catch(e) {
-    console.error('Worker unreachable:', e);
-    return false;
-  }
-}
-
-// In-memory client cache
+// ── WORKER URL ────────────────────────────────────────────
+const WORKER_URL = 'https://bright-fly-47.jimtufexis-max.deno.net';
 const _wc = {};
 async function wfetch(path, ttl=25*60*1000) {
-  if (_wc[path] && (Date.now() - _wc[path].ts < ttl)) return _wc[path].val;
-  const r = await fetch(WORKER_URL + path, {signal: AbortSignal.timeout(12000)});
-  if (!r.ok) throw new Error(`Worker ${r.status}: ${path}`);
+  if (_wc[path] && (Date.now()-_wc[path].ts < ttl)) return _wc[path].val;
+  const r = await fetch(WORKER_URL+path, {signal:AbortSignal.timeout(10000)});
+  if (!r.ok) throw new Error(`${r.status}`);
   const val = await r.json();
-  _wc[path] = {val, ts: Date.now()};
+  _wc[path]={val,ts:Date.now()};
   return val;
 }
 
-// Pre-warm the worker on page load (eliminates cold-start delay when user picks a game)
-function prewarm() {
-  const today = ds(S.date);
-  fetch(`${WORKER_URL}/slate?date=${today}`).catch(()=>{});          // warm + cache games
-  fetch(`${WORKER_URL}/savant-batters?season=2026`).catch(()=>{});   // warm leaderboard
-  fetch(`${WORKER_URL}/fg-batters?season=2026`).catch(()=>{});       // warm FG
+// Direct MLB API fallback (used if worker is unavailable)
+const MLB_API = 'https://statsapi.mlb.com/api/v1';
+const _dc = {};
+async function dfetch(url, ttl=10*60*1000) {
+  if (_dc[url] && (Date.now()-_dc[url].ts<ttl)) return _dc[url].val;
+  const r = await fetch(url, {signal:AbortSignal.timeout(10000)});
+  if (!r.ok) throw new Error(`${r.status}`);
+  const val = await r.json();
+  _dc[url]={val,ts:Date.now()};
+  return val;
 }
 
-async function getGames(ds)           { return wfetch(`/games?date=${ds}`); }
-async function getRoster(abbr)        { return wfetch(`/roster?team=${abbr}`); }
-async function getPH(id)              { const d = await wfetch(`/pitcher?id=${id}&season=2026`); return d?.hand||'R'; }
-async function getPitcherRow(id, fgP, savP) {
-  if (!id) return {};
-  const d = await wfetch(`/pitcher?id=${id}&season=2026`);
-  const sid = String(id);
-  const row = {};
-  if (d?.stat) {
-    const s = d.stat;
-    const n = v => v != null ? parseFloat(v) : null;
-    const so = n(s.strikeOuts), bf = n(s.battersFaced), bb = n(s.baseOnBalls);
-    Object.assign(row, {era:n(s.era), p_k_pct:so&&bf?Math.round(so/bf*1000)/10:null,
-      p_bb_pct:bb&&bf?Math.round(bb/bf*1000)/10:null});
-  }
-  const fg = fgP[sid]; if (fg) for (const [k,v] of Object.entries(fg)) if (v!=null) row[k]=v;
-  const sv = savP[sid]; if (sv) { if(sv.p_brl_pct!=null)row.p_brl_pct=sv.p_brl_pct; if(sv.p_hard_hit_pct!=null)row.p_hard_hit_pct=sv.p_hard_hit_pct; if(sv.p_avg_ev!=null)row.p_avg_ev=sv.p_avg_ev; }
+async function getGames(dateStr) {
+  try { return await wfetch(`/games?date=${dateStr}`); } catch {}
+  // Direct MLB API fallback
+  const d = await dfetch(`${MLB_API}/schedule?sportId=1&date=${dateStr}&hydrate=team,venue,probablePitcher(note)`);
+  return (d.dates||[]).flatMap(dt=>(dt.games||[]).map(g=>({
+    pk:g.gamePk,
+    away:g.teams.away.team.abbreviation, home:g.teams.home.team.abbreviation,
+    awayFull:g.teams.away.team.name, homeFull:g.teams.home.team.name,
+    venue:g.venue?.name||'',
+    awaySpId:g.teams.away.probablePitcher?.id, awaySpName:g.teams.away.probablePitcher?.fullName||'TBD',
+    homeSpId:g.teams.home.probablePitcher?.id, homeSpName:g.teams.home.probablePitcher?.fullName||'TBD',
+  })));
+}
+async function getRoster(abbr) {
+  try { return await wfetch(`/roster?team=${abbr}`); } catch {}
+  const td = await dfetch(`${MLB_API}/teams?sportId=1&season=2026`);
+  const team = (td.teams||[]).find(t=>t.abbreviation===abbr);
+  if (!team) return [];
+  const r = await dfetch(`${MLB_API}/teams/${team.id}/roster?rosterType=active&season=2026`);
+  return (r.roster||[]).map(p=>({id:p.person.id,name:p.person.fullName,pos:p.position?.abbreviation||'',batHand:p.person?.batSide?.code||'R'})).filter(p=>p.pos!=='P'&&p.pos!=='');
+}
+async function getPH(id) {
+  try { const d=await wfetch(`/pitcher?id=${id}&season=2026`); return d?.hand||'R'; } catch {}
+  const d=await dfetch(`${MLB_API}/people/${id}`).catch(()=>null);
+  return d?.people?.[0]?.pitchHand?.code||'R';
+}
+async function getWx(venue)           { try{return await wfetch(`/weather?venue=${encodeURIComponent(venue)}`);}catch{return{temp:72,rain:0,wind:0,wdir:0};} }
+async function getSB(season)          { try{return await wfetch(`/savant-batters?season=${season}`);}catch{return{};} }
+async function getSP(season)          { try{return await wfetch(`/savant-pitchers?season=${season}`);}catch{return{};} }
+async function getFB(season)          { try{return await wfetch(`/fg-batters?season=${season}`);}catch{return{};} }
+async function getFP(season)          { try{return await wfetch(`/fg-pitchers?season=${season}`);}catch{return{};} }
+async function getArsenal(pid,season) { try{return await wfetch(`/arsenal?pid=${pid}&season=${season}`);}catch{return{};} }
+async function getL14(pid,season)     { try{return await wfetch(`/l14?pid=${pid}&season=${season}`);}catch{return null;} }
+async function getABLog(pid,season,pHand=null,pitchTypes=null) {
+  try {
+    const rows=await wfetch(`/ablogs?pid=${pid}&season=${season}&days=90`);
+    return rows.filter(r=>{
+      if(pHand&&r.arm!==pHand)return false;
+      if(pitchTypes&&pitchTypes.length&&!pitchTypes.includes(r.pt))return false;
+      return true;
+    });
+  } catch { return []; }
+}
+async function getPitcherRow(id,fgP,savP) {
+  if(!id)return{};
+  const sid=String(id);
+  const row={era:null,fip:null,p_k_pct:null,p_bb_pct:null,p_brl_pct:null,p_hr_per_fb:null,p_hard_hit_pct:null,p_fb_pct:null,p_avg_ev:null};
+  try {
+    const d=await wfetch(`/pitcher?id=${sid}&season=2026`);
+    if(d?.pitching){const s=d.pitching;const n=v=>v!=null?parseFloat(v):null;const so=n(s.strikeOuts),bf=n(s.battersFaced),bb=n(s.baseOnBalls);row.era=n(s.era);row.p_k_pct=so&&bf?Math.round(so/bf*1000)/10:null;row.p_bb_pct=bb&&bf?Math.round(bb/bf*1000)/10:null;}
+  } catch {}
+  const fg=fgP[sid];if(fg)for(const[k,v]of Object.entries(fg)){if(v!=null)row[k]=v;}
+  const sv=savP[sid];if(sv){if(sv.p_brl_pct!=null)row.p_brl_pct=sv.p_brl_pct;if(sv.p_hard_hit_pct!=null)row.p_hard_hit_pct=sv.p_hard_hit_pct;if(sv.p_avg_ev!=null)row.p_avg_ev=sv.p_avg_ev;}
   return row;
 }
-async function getWx(venue)           { return wfetch(`/weather?venue=${encodeURIComponent(venue)}`); }
-async function getSB(season)          { return wfetch(`/savant-batters?season=${season}`); }
-async function getSP(season)          { return wfetch(`/savant-pitchers?season=${season}`); }
-async function getFB(season)          { return wfetch(`/fg-batters?season=${season}`); }
-async function getFP(season)          { return wfetch(`/fg-pitchers?season=${season}`); }
-async function getArsenal(pid,season) { return wfetch(`/arsenal?pid=${pid}&season=${season}`); }
-async function getL14(pid,season)     { return wfetch(`/l14?pid=${pid}&season=${season}`); }
-async function getABLog(pid, season, pHand=null, pitchTypes=null) {
-  const rows = await wfetch(`/ablogs?pid=${pid}&season=${season}&days=90`);
-  return rows.filter(r => {
-    if (pHand && r.arm !== pHand) return false;
-    if (pitchTypes && pitchTypes.length && !pitchTypes.includes(r.pt)) return false;
-    return true;
-  });
+function prewarm() {
+  const today=ds(S.date);
+  fetch(`${WORKER_URL}/slate?date=${today}`).catch(()=>{});
+  fetch(`${WORKER_URL}/savant-batters?season=2026`).catch(()=>{});
+  fetch(`${WORKER_URL}/fg-batters?season=2026`).catch(()=>{});
 }
+function testWorker(){return Promise.resolve(true);}
+
 
 function wxS(w) {
   let s = 50 + Math.max(-20,Math.min(20,(w.temp-65)*.5)) - w.rain*.4;
@@ -510,18 +527,17 @@ async function loadSlate() {
   // /slate returns games + weather + park factors in one fast call
   let slateGames = [];
   try {
-    slateGames = await wfetch(`/slate?date=${ds(S.date)}`, 5*60*1000);
+    // Try worker /slate first (games+weather in one call), fall back to direct
+    try {
+      slateGames = await wfetch(`/slate?date=${ds(S.date)}`, 5*60*1000);
+    } catch {
+      // Worker unavailable — get games directly from MLB API
+      const rawGames = await getGames(ds(S.date));
+      const weathers = await Promise.allSettled(rawGames.map(g=>getWx(g.venue)));
+      slateGames = rawGames.map((g,i)=>({...g, weather:weathers[i].status==='fulfilled'?weathers[i].value:{temp:72,rain:0,wind:0,wdir:0}, parkFactor:PARK[g.home]||1.00}));
+    }
   } catch(e) {
-    // Show exactly what went wrong
-    const errMsg = String(e.message||e);
-    document.getElementById('gameGrid').innerHTML = `
-      <div class="empty" style="text-align:left;padding:14px">
-        <div style="color:var(--red);font-weight:700;margin-bottom:8px">Failed to load games</div>
-        <div style="font-size:.75rem;color:var(--t3);margin-bottom:6px">Worker URL: ${WORKER_URL}</div>
-        <div style="font-size:.72rem;color:var(--t4);font-family:'JetBrains Mono',monospace;background:var(--bg3);padding:8px;border-radius:6px;word-break:break-all">${errMsg}</div>
-        <div style="font-size:.72rem;color:var(--t4);margin-top:8px">Open browser console for details</div>
-      </div>`;
-    console.error('loadSlate error:', e);
+    document.getElementById('gameGrid').innerHTML=`<div class="empty">Could not load games<br><small style="font-size:.72rem">${e.message}</small></div>`;
     return;
   }
 
