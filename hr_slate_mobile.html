@@ -356,240 +356,60 @@ const COORDS = {
   'Citi Field':[40.76,-73.85],'Camden Yards':[39.28,-76.62]};
 
 const MLB_API = 'https://statsapi.mlb.com/api/v1';
-const PROX = [
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  u => `https://proxy.cors.sh/${u}`,
-];
+// ══════════════════════════════════════════════════════════
+//   WORKER API — all data fetched server-side via Cloudflare Worker
+//   Change WORKER_URL after deploying hr_scout_worker.js
+// ══════════════════════════════════════════════════════════
 
-/* ══════════════════════════════════════════════════════════
-   STATE
-══════════════════════════════════════════════════════════ */
-const S = {
-  date: new Date(), games: [], game: null,
-  team: 'away', sort: 'hrScore',
-  hitters: {away:[], home:[]},
-  pRows: {away:null, home:null},
-  arsenals: {away:{}, home:{}},
-  pHands: {away:'R', home:'R'},
-  weather: null,
-  openId: null, openTab: {},
-  abBatter: null, abCount: 15,
-  abPitchTypes: [], abArm: 'Both', abRows: [],
-};
-// caches
-const _stc = {}, _svc = {};
-let _savB=null,_savP=null,_fgB=null,_fgP=null;
+// !! PASTE YOUR WORKER URL HERE after deploying !!
+const WORKER_URL = 'https://d1-template.jimtufexis.workers.dev';
 
-/* ══════════════════════════════════════════════════════════
-   SCORING — exact match to Streamlit Python
-══════════════════════════════════════════════════════════ */
-function scl(v, lo, hi, hib) {
-  if (v == null) return null;
-  v = Math.max(lo, Math.min(hi, v));
-  const r = hi === lo ? 0.5 : (v - lo) / (hi - lo);
-  return hib ? r * 100 : (1 - r) * 100;
+// In-memory client cache so we don't re-fetch mid-session
+const _wc = {};
+async function wfetch(path) {
+  if (_wc[path] && (Date.now() - _wc[path].ts < 25 * 60 * 1000)) return _wc[path].val;
+  const r = await fetch(WORKER_URL + path);
+  if (!r.ok) throw new Error(`Worker ${r.status}: ${path}`);
+  const val = await r.json();
+  _wc[path] = {val, ts: Date.now()};
+  return val;
 }
 
-const L14M = {barrel_pct:'l14_brl', hard_hit_pct:'l14_hard', avg_ev:'l14_ev', avg_la:'l14_la'};
-
-function calcHS(h, l={}) {
-  // barrel%(28), hard hit%(22), EV(18), LA(8), sweet spot%(8), FB%(7), pull%(5), K%(4)
-  const M = [
-    ['barrel_pct',3,18,true,28],['hard_hit_pct',30,55,true,22],
-    ['avg_ev',86,95,true,18],['avg_la',8,18,true,8],
-    ['sweet_spot_pct',25,42,true,8],['fb_pct',22,45,true,7],
-    ['pull_pct',28,50,true,5],['k_pct',6,30,false,4]
-  ];
-  let tw=0, ts=0;
-  for (const [c,lo,hi,hib,w] of M) {
-    const lk = L14M[c];
-    const v = (lk && l[lk] != null) ? l[lk] : h[c];
-    if (v == null) continue;
-    const s = scl(v,lo,hi,hib); if (s != null) {ts+=s*w; tw+=w;}
+async function getGames(ds)           { return wfetch(`/games?date=${ds}`); }
+async function getRoster(abbr)        { return wfetch(`/roster?team=${abbr}`); }
+async function getPH(id)              { const d = await wfetch(`/pitcher?id=${id}&season=2026`); return d?.hand||'R'; }
+async function getPitcherRow(id, fgP, savP) {
+  if (!id) return {};
+  const d = await wfetch(`/pitcher?id=${id}&season=2026`);
+  const sid = String(id);
+  const row = {};
+  if (d?.stat) {
+    const s = d.stat;
+    const n = v => v != null ? parseFloat(v) : null;
+    const so = n(s.strikeOuts), bf = n(s.battersFaced), bb = n(s.baseOnBalls);
+    Object.assign(row, {era:n(s.era), p_k_pct:so&&bf?Math.round(so/bf*1000)/10:null,
+      p_bb_pct:bb&&bf?Math.round(bb/bf*1000)/10:null});
   }
-  return tw >= 40 ? Math.round(ts/tw) : null;
+  const fg = fgP[sid]; if (fg) for (const [k,v] of Object.entries(fg)) if (v!=null) row[k]=v;
+  const sv = savP[sid]; if (sv) { if(sv.p_brl_pct!=null)row.p_brl_pct=sv.p_brl_pct; if(sv.p_hard_hit_pct!=null)row.p_hard_hit_pct=sv.p_hard_hit_pct; if(sv.p_avg_ev!=null)row.p_avg_ev=sv.p_avg_ev; }
+  return row;
+}
+async function getWx(venue)           { return wfetch(`/weather?venue=${encodeURIComponent(venue)}`); }
+async function getSB(season)          { return wfetch(`/savant-batters?season=${season}`); }
+async function getSP(season)          { return wfetch(`/savant-pitchers?season=${season}`); }
+async function getFB(season)          { return wfetch(`/fg-batters?season=${season}`); }
+async function getFP(season)          { return wfetch(`/fg-pitchers?season=${season}`); }
+async function getArsenal(pid,season) { return wfetch(`/arsenal?pid=${pid}&season=${season}`); }
+async function getL14(pid,season)     { return wfetch(`/l14?pid=${pid}&season=${season}`); }
+async function getABLog(pid, season, pHand=null, pitchTypes=null) {
+  const rows = await wfetch(`/ablogs?pid=${pid}&season=${season}&days=90`);
+  return rows.filter(r => {
+    if (pHand && r.arm !== pHand) return false;
+    if (pitchTypes && pitchTypes.length && !pitchTypes.includes(r.pt)) return false;
+    return true;
+  });
 }
 
-function calcHConf(h, l={}) {
-  const M = [['barrel_pct',28],['hard_hit_pct',22],['avg_ev',18],['avg_la',8],
-             ['sweet_spot_pct',8],['fb_pct',7],['pull_pct',5],['k_pct',4]];
-  const tot = 100;
-  const found = M.reduce((a,[c,w]) => {
-    const lk=L14M[c]; return a + ((lk&&l[lk]!=null)||h[c]!=null ? w : 0);
-  }, 0);
-  return Math.round(found/tot*100)/100;
-}
-
-const MLB_AVG = {p_brl_pct:6.5,p_hr_per_fb:12.0,p_hard_hit_pct:37.0,p_k_pct:22.0,p_fb_pct:35.0,p_avg_ev:88.0};
-function calcPR(p) {
-  const M = [['p_brl_pct',2,14,true,30],['p_hr_per_fb',5,20,true,25],
-    ['p_hard_hit_pct',28,50,true,20],['p_k_pct',14,35,false,15],
-    ['p_fb_pct',20,50,true,7],['p_avg_ev',82,93,true,3]];
-  const hasReal = p && M.some(([c]) => p[c] != null);
-  let tw=0, ts=0;
-  for (const [c,lo,hi,hib,w] of M) {
-    const v = (p&&p[c]!=null) ? p[c] : (hasReal ? null : MLB_AVG[c]);
-    if (v == null) continue;
-    const s = scl(v,lo,hi,hib); if (s != null) {ts+=s*w; tw+=w;}
-  }
-  return tw > 0 ? Math.round(ts/tw) : 50;
-}
-
-function calcPConf(p) {
-  const M = [['p_brl_pct',30],['p_hr_per_fb',25],['p_hard_hit_pct',20],
-             ['p_k_pct',15],['p_fb_pct',7],['p_avg_ev',3]];
-  return Math.round(M.reduce((a,[c,w])=>a+(p&&p[c]!=null?w:0),0)/100*100)/100;
-}
-
-function calcPM(splits, arsenal) {
-  const keys = ['brl_pct','hard_pct','avg_ev','avg_la','woba','xwoba','whiff_pct'];
-  const tw = Object.values(arsenal).reduce((a,b)=>a+b,0);
-  if (!tw) return {};
-  const acc={}, wts={};
-  for (const k of keys) {acc[k]=0; wts[k]=0;}
-  for (const [pt,pct] of Object.entries(arsenal)) {
-    const hvp = splits[pt] || {}; const w = pct/tw;
-    for (const k of keys) { if (hvp[k] != null) {acc[k]+=hvp[k]*w; wts[k]+=w;} }
-  }
-  const out = {};
-  for (const k of keys) out[k] = wts[k]>0 ? acc[k]/wts[k] : null;
-  return out;
-}
-
-function calcHRS(h, pr, ws, pf, pm, platW, l={}) {
-  const hs = calcHS(h, l);
-  const pfS = Math.max(0, Math.min(100, 50+(pf-1)*100));
-  const wsS = Math.max(0, Math.min(100, ws));
-  const pmS = pm?.woba!=null ? Math.max(0,Math.min(100,(pm.woba-.220)/(.420-.220)*100)) : null;
-  const plS = platW!=null ? Math.max(0,Math.min(100,(platW-.220)/(.420-.220)*100)) : null;
-  const C = [];
-  if (pr!=null)  C.push([pr,.28]);
-  if (pmS!=null) C.push([pmS,.25]);
-  if (hs!=null)  C.push([hs,.22]);
-  if (plS!=null) C.push([plS,.18]);
-  C.push([pfS,.05],[wsS,.02]);
-  const tw = C.reduce((a,b)=>a+b[1],0);
-  if (!tw) return null;
-  return Math.max(0, Math.min(100, Math.round(C.reduce((a,b)=>a+b[0]*b[1],0)/tw)));
-}
-
-/* ══════════════════════════════════════════════════════════
-   DISPLAY HELPERS
-══════════════════════════════════════════════════════════ */
-function hc(v, lo, hi, hib=true, dec=1, suf='') {
-  if (v==null) return `<span class="hc hcn">—</span>`;
-  let p = Math.max(0,Math.min(1, hi===lo ? 0.5 : (v-lo)/(hi-lo)));
-  if (!hib) p = 1-p;
-  const c = p>=.65?'hcg':p>=.45?'hcy':'hcr';
-  return `<span class="hc ${c}">${v.toFixed(dec)}${suf}</span>`;
-}
-const hcn = (v,lo,hi,h=true) => hc(v,lo,hi,h,3);
-const hcp = (v,lo,hi,h=true) => hc(v,lo,hi,h,1,'%');
-const hcv = (v,lo,hi,h=true) => hc(v,lo,hi,h,1,' mph');
-
-function sc(s, big=false) {
-  if (s==null) return `<span class="sc hcn" style="min-width:${big?42:36}px">—</span>`;
-  const c = s>=65?'hcg':s>=45?'hcy':'hcr';
-  return `<span class="sc ${c}" style="min-width:${big?42:36}px;${big?'font-size:.9rem':''}">${s}</span>`;
-}
-function rp(r) {
-  if (r==null) return `<span class="rp rp-n">—</span>`;
-  const c = r>=65?'rp-r':r>=45?'rp-y':'rp-g';
-  const lb = r>=65?'volatile':r>=45?'average':'safe';
-  return `<span class="rp ${c}">${r}</span> <span style="font-size:.61rem;color:var(--t4)">${lb}</span>`;
-}
-function cb(conf) {
-  if (conf==null) return '';
-  const p = Math.round(conf*100);
-  const c = p>=85?'cb-g':p>=50?'cb-y':'cb-r';
-  return `<span class="cb ${c}">${p}%</span>`;
-}
-function mtCls(v,lo,hi,hib) {
-  if (v==null) return '';
-  let p = Math.max(0,Math.min(1,(v-lo)/(hi-lo))); if (!hib) p=1-p;
-  return p>=.65?'hcg':p>=.45?'hcy':'hcr';
-}
-const fmt = (v,d=1,s='') => v==null ? '—' : (+v).toFixed(d)+s;
-
-/* ══════════════════════════════════════════════════════════
-   API / DATA FETCHING
-══════════════════════════════════════════════════════════ */
-async function px(url) {
-  try { const r=await fetch(url,{signal:AbortSignal.timeout(6000)}); if(r.ok) return await r.json(); } catch {}
-  for (const mk of PROX) {
-    try { const r=await fetch(mk(url),{signal:AbortSignal.timeout(8000)});
-      if (r.ok) { const t=await r.text();
-        try {const j=JSON.parse(t); return j.contents?JSON.parse(j.contents):j;} catch {} }
-    } catch {}
-  }
-  return null;
-}
-async function pxt(url) {
-  // Direct fetch first
-  try {
-    const r = await fetch(url, {signal:AbortSignal.timeout(8000)});
-    if (r.ok) { const t = await r.text(); if (t && t.length > 50) return t; }
-  } catch {}
-
-  // Try each proxy
-  for (const mk of PROX) {
-    try {
-      const r = await fetch(mk(url), {signal:AbortSignal.timeout(12000)});
-      if (r.ok) {
-        const t = await r.text();
-        if (!t || t.length < 50) continue;
-        try { const j=JSON.parse(t); if (j.contents) return j.contents; } catch {}
-        // Reject obvious error responses
-        if (t.startsWith('<!DOCTYPE') || t.startsWith('<html')) continue;
-        return t;
-      }
-    } catch {}
-  }
-  return null;
-}
-
-async function getGames(ds) {
-  const d = await px(`${MLB_API}/schedule?sportId=1&date=${ds}&hydrate=team,venue,probablePitcher(note)`);
-  if (!d) return [];
-  return (d.dates||[]).flatMap(dt => (dt.games||[]).map(g => ({
-    pk: g.gamePk,
-    away: g.teams.away.team.abbreviation, home: g.teams.home.team.abbreviation,
-    awayFull: g.teams.away.team.name, homeFull: g.teams.home.team.name,
-    venue: g.venue?.name||'', gameDate: g.gameDate||'',
-    awaySpId: g.teams.away.probablePitcher?.id,
-    awaySpName: g.teams.away.probablePitcher?.fullName||'TBD',
-    homeSpId: g.teams.home.probablePitcher?.id,
-    homeSpName: g.teams.home.probablePitcher?.fullName||'TBD',
-  })));
-}
-
-async function getRoster(abbr) {
-  const td = await px(`${MLB_API}/teams?sportId=1&season=2026`);
-  const team = (td?.teams||[]).find(t=>t.abbreviation===abbr);
-  if (!team) return [];
-  const r = await px(`${MLB_API}/teams/${team.id}/roster?rosterType=active&season=2026`);
-  return (r?.roster||[]).map(p=>({
-    id: p.person.id, name: p.person.fullName,
-    pos: p.position?.abbreviation||'', batHand: p.person?.batSide?.code||'R'
-  })).filter(p=>p.pos!=='P'&&p.pos!=='');
-}
-
-async function getPH(id) {
-  if (!id) return 'R';
-  const d = await px(`${MLB_API}/people/${id}`);
-  return d?.people?.[0]?.pitchHand?.code||'R';
-}
-
-async function getWx(venue) {
-  const [lat,lon] = COORDS[venue]||[40.71,-74.01];
-  try {
-    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,precipitation_probability,windspeed_10m,winddirection_10m&temperature_unit=fahrenheit&windspeed_unit=mph&timezone=auto&forecast_days=1`);
-    const d = await r.json(); const h = d.hourly||{};
-    return {temp:h.temperature_2m?.[13]||72, rain:h.precipitation_probability?.[13]||0,
-            wind:h.windspeed_10m?.[13]||0, wdir:h.winddirection_10m?.[13]||0};
-  } catch { return {temp:72,rain:0,wind:0,wdir:0}; }
-}
 function wxS(w) {
   let s = 50 + Math.max(-20,Math.min(20,(w.temp-65)*.5)) - w.rain*.4;
   const b = (w.wdir<90||w.wdir>270) ? .8 : -.8;
@@ -598,17 +418,6 @@ function wxS(w) {
 function wLbl(spd,deg) {
   return `${Math.round(spd)} mph ${['N','NE','E','SE','S','SW','W','NW'][Math.round(deg/45)%8]}`;
 }
-
-async function getPS(id, season) {
-  const key = `${id}-${season}`;
-  if (_stc[key]) return _stc[key];
-  const d = await px(`${MLB_API}/people/${id}?hydrate=stats(group=[hitting,pitching],type=season,season=${season})`);
-  const p = d?.people?.[0]; if (!p) return null;
-  const hS=(p.stats||[]).find(s=>s.group?.displayName==='hitting');
-  const pS=(p.stats||[]).find(s=>s.group?.displayName==='pitching');
-  const res = {hitting:hS?.splits?.[0]?.stat||null, pitching:pS?.splits?.[0]?.stat||null};
-  _stc[key]=res; return res;
-}
 function mapH(s) {
   if (!s) return {};
   const n = v => v!=null?parseFloat(v):null;
@@ -616,272 +425,12 @@ function mapH(s) {
   const so=n(s.strikeOuts),pa=n(s.plateAppearances),bb=n(s.baseOnBalls);
   return {avg,obp,slg,ops:obp!=null&&slg!=null?Math.round((obp+slg)*1000)/1000:null,
     hr:n(s.homeRuns),iso:slg!=null&&avg!=null?Math.round((slg-avg)*1000)/1000:null,
-    k_pct:so&&pa?Math.round(so/pa*1000)/10:null,
-    bb_pct:bb&&pa?Math.round(bb/pa*1000)/10:null,
+    k_pct:so&&pa?Math.round(so/pa*1000)/10:null,bb_pct:bb&&pa?Math.round(bb/pa*1000)/10:null,
     barrel_pct:null,hard_hit_pct:null,avg_ev:null,avg_la:null,
     pull_pct:null,fb_pct:null,swstr_pct:null,sweet_spot_pct:null};
 }
-function mapP(s) {
-  if (!s) return null;
-  const n=v=>v!=null?parseFloat(v):null;
-  const so=n(s.strikeOuts),bf=n(s.battersFaced),bb=n(s.baseOnBalls);
-  return {era:n(s.era),fip:null,xfip:null,
-    k_pct:so&&bf?Math.round(so/bf*1000)/10:null,
-    bb_pct:bb&&bf?Math.round(bb/bf*1000)/10:null,
-    p_k_pct:so&&bf?Math.round(so/bf*1000)/10:null,
-    p_bb_pct:bb&&bf?Math.round(bb/bf*1000)/10:null,
-    p_brl_pct:null,p_hr_per_fb:null,p_hard_hit_pct:null,p_fb_pct:null,p_avg_ev:null};
-}
-
-async function getSB(season) {
-  if (_savB) return _savB;
-  const today = new Date().toISOString().slice(0,10);
-  const urls = [
-    `https://baseballsavant.mlb.com/leaderboard/statcast?type=batter&year=${season}&position=&team=&min=10&csv=true&_cd=${today}`,
-    `https://baseballsavant.mlb.com/leaderboard/exit-velocity-barrels?type=batter&year=${season}&position=&team=&min=10&csv=true`,
-  ];
-  for (const url of urls) {
-    const txt = await pxt(url); if (!txt||txt.length<100) continue;
-    const rows = txt.trim().split('\n'); if (rows.length<2) continue;
-    const hdrs = rows[0].split(',').map(h=>h.trim().replace(/"/g,'').toLowerCase());
-    const idI = hdrs.findIndex(h=>['player_id','batter','mlbam_id','mlbamid','xmlbamid'].includes(h));
-    if (idI<0) continue;
-    const out = {};
-    for (let i=1;i<rows.length;i++) {
-      const cols = rows[i].split(',').map(c=>c.trim().replace(/"/g,''));
-      const pid = cols[idI]?.replace(/\.0$/,''); if (!pid||pid==='null') continue;
-      const g = k=>{const i=hdrs.indexOf(k);return i>=0&&cols[i]!==''?parseFloat(cols[i])||null:null;};
-      out[pid]={barrel_pct:g('brl_percent')??g('barrel_batted_rate'),hard_hit_pct:g('ev95percent'),
-        avg_ev:g('avg_hit_speed')??g('avg_exit_velocity'),avg_la:g('avg_hit_angle')??g('avg_launch_angle'),
-        sweet_spot_pct:g('anglesweetspotpercent')};
-    }
-    if (Object.keys(out).length>10) {_savB=out; return out;}
-  }
-  return {};
-}
-
-async function getSP(season) {
-  if (_savP) return _savP;
-  const txt = await pxt(`https://baseballsavant.mlb.com/leaderboard/statcast?type=pitcher&year=${season}&position=&team=&min=10&csv=true`);
-  if (!txt||txt.length<100) return {};
-  const rows=txt.trim().split('\n'); if(rows.length<2) return {};
-  const hdrs=rows[0].split(',').map(h=>h.trim().replace(/"/g,'').toLowerCase());
-  const idI=hdrs.findIndex(h=>['player_id','pitcher','mlbamid','xmlbamid'].includes(h));
-  if (idI<0) return {};
-  const out={};
-  for (let i=1;i<rows.length;i++) {
-    const cols=rows[i].split(',').map(c=>c.trim().replace(/"/g,''));
-    const pid=cols[idI]?.replace(/\.0$/,''); if(!pid||pid==='null') continue;
-    const g=k=>{const i=hdrs.indexOf(k);return i>=0?parseFloat(cols[i])||null:null;};
-    out[pid]={p_brl_pct:g('brl_percent'),p_hard_hit_pct:g('ev95percent'),p_avg_ev:g('avg_hit_speed')};
-  }
-  _savP=out; return out;
-}
-
-async function getFB(season) {
-  if (_fgB) return _fgB;
-  const d = await px(`https://www.fangraphs.com/api/leaders/major-league/data?pos=all&stats=bat&lg=all&qual=0&season=${season}&season1=${season}&ind=0&team=0&rost=0&players=0&type=8&month=0&pageitems=2000&pagenum=1`);
-  const rows=d?.data||[]; if(!rows.length) return {};
-  const out={};
-  for (const r of rows) {
-    const pid=String(r.xMLBAMID||r.mlbamid||r.playerid||'').replace(/\.0$/,'').trim();
-    if (!pid||pid==='undefined') continue;
-    const pt=v=>{if(v==null)return null;const f=parseFloat(v);if(isNaN(f))return null;return Math.abs(f)<=1?Math.round(f*1000)/10:Math.round(f*10)/10;};
-    const n=v=>{if(v==null)return null;const f=parseFloat(v);return isNaN(f)?null:f;};
-    out[pid]={pull_pct:pt(r['Pull%']??r.pull),fb_pct:pt(r['FB%']??r.fb),
-      swstr_pct:pt(r['SwStr%']??r.swstr),barrel_pct:pt(r['Barrel%']??r.barrel),
-      hard_hit_pct:pt(r['HardHit%']??r.hardhit),avg_ev:n(r['AvgEV']),avg_la:n(r['AvgLA'])};
-  }
-  _fgB=out; return out;
-}
-
-async function getFP(season) {
-  if (_fgP) return _fgP;
-  const d = await px(`https://www.fangraphs.com/api/leaders/major-league/data?pos=all&stats=pit&lg=all&qual=0&season=${season}&season1=${season}&ind=0&team=0&rost=0&players=0&type=8&month=0&pageitems=1000&pagenum=1`);
-  const rows=d?.data||[]; if(!rows.length) return {};
-  const out={};
-  for (const r of rows) {
-    const pid=String(r.xMLBAMID||r.mlbamid||r.playerid||'').replace(/\.0$/,'').trim();
-    if (!pid||pid==='undefined') continue;
-    const pt=v=>{if(v==null)return null;const f=parseFloat(v);if(isNaN(f))return null;return Math.abs(f)<=1?Math.round(f*1000)/10:Math.round(f*10)/10;};
-    const n=v=>{if(v==null)return null;const f=parseFloat(v);return isNaN(f)?null:f;};
-    out[pid]={era:n(r.ERA),fip:n(r.FIP),xfip:n(r.xFIP),
-      p_k_pct:pt(r['K%']),p_bb_pct:pt(r['BB%']),p_fb_pct:pt(r['FB%']),
-      p_gb_pct:pt(r['GB%']),p_hr_per_fb:pt(r['HR/FB']??r.hrfb),ip:n(r.IP)};
-  }
-  _fgP=out; return out;
-}
-
-async function getArsenal(pid, season) {
-  if (!pid) return {};
-  const txt = await pxt(`https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type=pitcher&pitchType=&year=${season}&team=&min=1&csv=true`);
-  if (!txt||txt.length<50) return {};
-  const rows=txt.trim().split('\n'); if(rows.length<2) return {};
-  const hdrs=rows[0].split(',').map(h=>h.trim().replace(/"/g,'').toLowerCase());
-  const idI=hdrs.findIndex(h=>['pitcher_id','mlbam_id','player_id','id'].includes(h));
-  const ptI=hdrs.findIndex(h=>['pitch_type','pitch_name'].includes(h));
-  const pctI=hdrs.findIndex(h=>['run_frequency_formatted','pitch_percent','pitch_usage'].includes(h));
-  if (idI<0||ptI<0) return {};
-  const sid=String(pid); const out={};
-  for (let i=1;i<rows.length;i++) {
-    const cols=rows[i].split(',').map(c=>c.trim().replace(/"/g,''));
-    if (cols[idI]!==sid) continue;
-    const pt=(cols[ptI]||'').toUpperCase(); if(!pt||pt==='NAN') continue;
-    if (pctI>=0) { let p=parseFloat(cols[pctI]); if(!isNaN(p)){if(p>0&&p<=1)p*=100;if(p>0)out[pt]=Math.round(p*10)/10;}}
-  }
-  return out;
-}
-
-// L14 — always anchored to today
-async function getL14(bid, season) {
-  const pid=String(bid);
-  const now=new Date(), st=new Date(); st.setDate(st.getDate()-14);
-  const fd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const txt=await pxt(`https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st)}&game_date_lt=${fd(now)}&type=details&`);
-  if (!txt||txt.length<100) return null;
-  const rows=txt.trim().split('\n'); if(rows.length<2) return null;
-  const hdrs=rows[0].split(',').map(h=>h.trim().replace(/"/g,'').toLowerCase());
-  const AB=new Set(['single','double','triple','home_run','field_out','grounded_into_double_play',
-    'strikeout','strikeout_double_play','force_out','field_error','fielders_choice',
-    'fielders_choice_out','double_play','triple_play','sac_fly','sac_bunt']);
-  const g=(row,k)=>{const i=hdrs.indexOf(k);return i>=0?row[i]?.trim().replace(/"/g,''):null;};
-  let evs=[],las=[],barrels=0,hrs=0,ab=0,bb=0,hbp=0,si=0,db=0,tr=0;
-  const dates=new Set();
-  for (let i=1;i<rows.length;i++) {
-    const cols=rows[i].split(',');
-    const ev=parseFloat(g(cols,'launch_speed')), la=parseFloat(g(cols,'launch_angle'));
-    const evt=g(cols,'events')||'', gd=g(cols,'game_date')||'';
-    if (gd) dates.add(gd);
-    if (!isNaN(ev)&&ev>0) {
-      evs.push(ev); if(!isNaN(la)) las.push(la);
-      if (ev>=98&&!isNaN(la)){const mx=Math.min(50,30+(ev-98));const mn=Math.max(8,26-(ev-98));if(la>=mn&&la<=mx)barrels++;}
-    }
-    if (AB.has(evt)){ab++;if(evt==='home_run')hrs++;else if(evt==='single')si++;else if(evt==='double')db++;else if(evt==='triple')tr++;}
-    if (evt==='walk')bb++;if(evt==='hit_by_pitch')hbp++;
-  }
-  const nB=evs.length,pa=ab+bb+hbp;
-  if (nB===0&&pa===0) return null;
-  const hc2=evs.filter(e=>e>=95).length;
-  const woba=pa>0?(0.69*bb+0.72*hbp+0.89*si+1.27*db+1.62*tr+2.10*hrs)/pa:null;
-  return {l14_brl:nB>0?Math.round(barrels/nB*1000)/10:null,
-    l14_hard:nB>0?Math.round(hc2/nB*1000)/10:null,
-    l14_ev:evs.length>0?Math.round(evs.reduce((a,b)=>a+b,0)/evs.length*10)/10:null,
-    l14_la:las.length>0?Math.round(las.reduce((a,b)=>a+b,0)/las.length*10)/10:null,
-    l14_hr:hrs,l14_woba:woba?Math.round(woba*1000)/1000:null,l14_games:dates.size,l14_pa:pa};
-}
-
-// AB log — direct browser fetch of Savant CSV
-// Works in real browser (GitHub Pages/Safari/Chrome) — Savant allows browser requests
-async function getABLog(bid, season, pHand=null, pitchTypes=null) {
-  if (!bid) return [];
-  const pid = String(bid);
-  const cacheKey = `ab-${pid}-${season}`;
-
-  if (!_svc[cacheKey]) {
-    const now = new Date();
-    const st = new Date(); st.setDate(st.getDate()-90);
-    const fd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-
-    const urls = [
-      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&game_date_gt=${fd(st)}&game_date_lt=${fd(now)}&type=details&`,
-      `https://baseballsavant.mlb.com/statcast_search/csv?hfSea=${season}%7C&player_type=batter&battersLookup%5B%5D=${pid}&type=details&`,
-    ];
-
-    for (const url of urls) {
-      // Direct browser fetch — works when app runs in Safari/Chrome (GitHub Pages)
-      // Savant blocks server-side proxies but allows real browser requests
-      let txt = null;
-      try {
-        const r = await fetch(url, {signal: AbortSignal.timeout(20000)});
-        if (r.ok) {
-          const t = await r.text();
-          if (t && t.length > 200 && !t.startsWith('<') && !t.includes('not in allowlist')) txt = t;
-        }
-      } catch(e) {}
-
-      // Proxy fallback (may not work for Savant, but worth trying)
-      if (!txt) txt = await pxt(url);
-
-      if (txt && txt.length > 200 && !txt.startsWith('<')) {
-        const first = txt.split('
-')[0].toLowerCase();
-        if (first.includes('pitch_type') || first.includes('events') || first.includes('game_date')) {
-          _svc[cacheKey] = txt; break;
-        }
-      }
-    }
-  }
-
-  if (!_svc[cacheKey]) return [];
-  return parseABCSV(_svc[cacheKey], pHand, pitchTypes);
-}
 
 
-// Parse Savant CSV into AB rows
-function parseABCSV(txt, pHand, pitchTypes) {
-  const rows = txt.trim().split('\n');
-  if (rows.length < 2) return [];
-  const hdrs = rows[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
-
-  const g = (cols, k) => {
-    const i = hdrs.indexOf(k);
-    return i >= 0 ? (cols[i]||'').trim().replace(/"/g,'') : null;
-  };
-
-  const AB_EVENTS = new Set([
-    'single','double','triple','home_run','field_out',
-    'grounded_into_double_play','strikeout','strikeout_double_play',
-    'force_out','field_error','fielders_choice','fielders_choice_out',
-    'double_play','triple_play','sac_fly','sac_bunt',
-    'walk','hit_by_pitch','catcher_interf',
-  ]);
-
-  const out = [];
-  for (let i = 1; i < rows.length; i++) {
-    const line = rows[i].trim(); if (!line) continue;
-    const cols = line.split(',');
-    const evt = (g(cols,'events')||'').toLowerCase().trim();
-    if (!evt || !AB_EVENTS.has(evt)) continue;
-
-    const arm = g(cols,'p_throws')||'?';
-    if (pHand && arm !== pHand) continue;
-    const pt = (g(cols,'pitch_type')||'').toUpperCase();
-    if (pitchTypes && pitchTypes.length && !pitchTypes.includes(pt)) continue;
-
-    const ev   = parseFloat(g(cols,'launch_speed'));
-    const la   = parseFloat(g(cols,'launch_angle'));
-    const dist = parseFloat(g(cols,'hit_distance_sc'));
-    const velo = parseFloat(g(cols,'release_speed'));
-    const gd   = g(cols,'game_date')||'';
-    const pitcher = g(cols,'player_name')||g(cols,'pitcher_name')||'—';
-
-    let isBrl = false;
-    if (!isNaN(ev)&&ev>=98&&!isNaN(la)){const mx=Math.min(50,30+(ev-98));const mn=Math.max(8,26-(ev-98));if(la>=mn&&la<=mx)isBrl=true;}
-    const isHR = evt==='home_run';
-    let hrPk = '0/30';
-    if (isHR) hrPk='✓ HR';
-    else if (!isNaN(dist)&&dist>0) hrPk=dist>=430?'30/30':dist>=410?'25/30':dist>=390?'18/30':dist>=370?'10/30':dist>=350?'4/30':dist>=330?'1/30':'0/30';
-
-    out.push({
-      date: gd.length>=10?gd.slice(5,10):gd, pitcher, arm, pt,
-      ptNm: PN[pt]||pt||'—',
-      ev:   isNaN(ev)?null:Math.round(ev*10)/10,
-      la:   isNaN(la)?null:Math.round(la*10)/10,
-      dist: isNaN(dist)?null:Math.round(dist),
-      bs:   null,
-      velo: isNaN(velo)?null:Math.round(velo*10)/10,
-      evt:  evt.replace(/_/g,' '), isHR, isBrl, hrPk,
-    });
-  }
-  out.sort((a,b)=>b.date.localeCompare(a.date));
-  return out;
-}
-
-
-
-/* ══════════════════════════════════════════════════════════
-   DATE
-══════════════════════════════════════════════════════════ */
 function ds(d){return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 function dlbl(d){
   const t=new Date();t.setHours(0,0,0,0);const x=new Date(d);x.setHours(0,0,0,0);
@@ -956,10 +505,23 @@ async function pickGame(idx) {
   S.game=S.games[idx];S.openId=null;
   S.hitters={away:[],home:[]};S.pRows={away:null,home:null};S.arsenals={away:{},home:{}};
   renderGameChips();
-  const g=S.game;const pf=PARK[g.home]||1.00;
+  const g=S.game; const pf=PARK[g.home]||1.00;
+
+  // Fire all bulk data fetches in parallel immediately — worker has these cached
+  const bulkFetch = Promise.all([
+    getWx(g.venue),
+    getSB(2026), getSP(2026), getFB(2026), getFP(2026),
+    getPH(g.awaySpId), getPH(g.homeSpId),
+    getArsenal(g.awaySpId,2026), getArsenal(g.homeSpId,2026),
+    getRoster(g.away), getRoster(g.home),
+  ]);
+
+  document.getElementById('hList').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading…</div>';
+
+  const [w, sb, sp, fb, fp, awH, hmH, awA, hmA, awR, hmR] = await bulkFetch;
 
   // Weather
-  const w=await getWx(g.venue);S.weather=w;const ws=wxS(w);
+  S.weather=w; const ws=wxS(w);
   document.getElementById('wxBar').innerHTML=[
     ['🌡️',`${Math.round(w.temp)}°F`,'Temp'],
     ['💨',wLbl(w.wind,w.wdir),'Wind'],
@@ -968,89 +530,79 @@ async function pickGame(idx) {
     ['☀️',`${Math.round(ws)}/100`,'Wx Score'],
   ].map(([ic,v,l])=>`<div class="wc"><span class="wv">${ic} ${v}</span><span class="wk">${l}</span></div>`).join('');
 
-  // Pitcher hands + arsenals
-  const [awH,hmH,awA,hmA]=await Promise.all([
-    getPH(g.awaySpId),getPH(g.homeSpId),
-    getArsenal(g.awaySpId,2026),getArsenal(g.homeSpId,2026),
-  ]);
-  S.pHands={away:awH,home:hmH};
-  // away batters face home SP  → hmA
-  // home batters face away SP  → awA
-  S.arsenals={away:hmA, home:awA};
+  // Fallback to 2025 if 2026 data thin
+  const savB=Object.keys(sb).length?sb:(await getSB(2025));
+  const savP=Object.keys(sp).length?sp:(await getSP(2025));
+  const fgB=Object.keys(fb).length?fb:(await getFB(2025));
+  const fgP=Object.keys(fp).length?fp:(await getFP(2025));
+
+  // Hands + arsenals
+  S.pHands={away:awH, home:hmH};
+  S.arsenals={away:hmA, home:awA};  // away batters face home SP (hmA); home face away SP (awA)
 
   // Team toggle
-  const tog=document.getElementById('teamTog');
-  tog.style.display='flex';
+  document.getElementById('teamTog').style.display='flex';
   document.getElementById('tAway').textContent=`${g.away} vs ${g.homeSpName.split(' ').pop()}`;
   document.getElementById('tHome').textContent=`${g.home} vs ${g.awaySpName.split(' ').pop()}`;
   document.getElementById('tAway').classList.add('on');
   document.getElementById('tHome').classList.remove('on');
   S.team='away';
+  renderSorts();
 
-  renderSorts();renderSpCard();
-
-  // Rosters
-  document.getElementById('hList').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading rosters…</div>';
-  const [awR,hmR]=await Promise.all([getRoster(g.away),getRoster(g.home)]);
-
-  // Season data
-  document.getElementById('hList').innerHTML='<div class="ldr"><div class="spin"></div><br>Loading stats…</div>';
-  const [sb,sp,fb,fp]=await Promise.all([getSB(2026),getSP(2026),getFB(2026),getFP(2026)]);
-  const savB=Object.keys(sb).length?sb:await getSB(2025);
-  const savP=Object.keys(sp).length?sp:await getSP(2025);
-  const fgB=Object.keys(fb).length?fb:await getFB(2025);
-  const fgP=Object.keys(fp).length?fp:await getFP(2025);
-
-  // Build pitcher rows
-  async function buildPRow(spId){
+  // Build pitcher rows using worker data
+  async function buildPRow(spId) {
     if (!spId) return {};
     const sid=String(spId);
-    let row={era:null,fip:null,p_k_pct:null,p_bb_pct:null,p_brl_pct:null,p_hr_per_fb:null,p_hard_hit_pct:null,p_fb_pct:null,p_avg_ev:null};
-    for (const yr of [2026,2025]){const d=await getPS(sid,yr);if(d?.pitching){Object.assign(row,mapP(d.pitching));break;}}
+    const row={era:null,fip:null,p_k_pct:null,p_bb_pct:null,p_brl_pct:null,p_hr_per_fb:null,p_hard_hit_pct:null,p_fb_pct:null,p_avg_ev:null};
+    const d=await wfetch(`/pitcher?id=${sid}&season=2026`);
+    if (d?.stat){const s=d.stat;const n=v=>v!=null?parseFloat(v):null;
+      const so=n(s.strikeOuts),bf=n(s.battersFaced),bb=n(s.baseOnBalls);
+      row.era=n(s.era);row.p_k_pct=so&&bf?Math.round(so/bf*1000)/10:null;
+      row.p_bb_pct=bb&&bf?Math.round(bb/bf*1000)/10:null;}
     const fg=fgP[sid];if(fg){for(const[k,v]of Object.entries(fg)){if(v!=null)row[k]=v;}}
     const sv=savP[sid];if(sv){if(sv.p_brl_pct!=null)row.p_brl_pct=sv.p_brl_pct;if(sv.p_hard_hit_pct!=null)row.p_hard_hit_pct=sv.p_hard_hit_pct;if(sv.p_avg_ev!=null)row.p_avg_ev=sv.p_avg_ev;}
     return row;
   }
   const [pRA,pRH]=await Promise.all([buildPRow(g.homeSpId),buildPRow(g.awaySpId)]);
-  S.pRows={away:pRA,home:pRH};renderSpCard();
+  S.pRows={away:pRA, home:pRH};
+  renderSpCard();
 
-  // Build hitter
-  async function buildH(h,spHand,pRow,arsenal){
-    const sid=String(h.id);let stats={};
-    for(const yr of[2026,2025]){const d=await getPS(sid,yr);if(d?.hitting){stats=mapH(d.hitting);break;}}
-    const fg=fgB[sid];if(fg){['pull_pct','fb_pct','swstr_pct','barrel_pct','hard_hit_pct','avg_ev','avg_la'].forEach(k=>{if(fg[k]!=null)stats[k]=fg[k];});}
-    const sv=savB[sid];if(sv){['barrel_pct','hard_hit_pct','avg_ev','avg_la','sweet_spot_pct'].forEach(k=>{if(sv[k]!=null)stats[k]=sv[k];});}
-    const l14=await getL14(sid,2026)||await getL14(sid,2025)||{};
-    Object.assign(stats,l14);
-    const pr=calcPR(pRow);
-    const wsNow=wxS(S.weather||{temp:72,rain:0,wind:0,wdir:0});
-    const pfT=PARK[S.team==='away'?S.game?.home:S.game?.away]||1.00;
-    const pm=calcPM({},arsenal);
-    return {...h,...stats,l14,spHand,pRow,arsenal,pitchSplits:{},platoon:{},
-      hs:calcHS(stats,l14),pm,platWoba:null,
-      hrScore:calcHRS(stats,pr,wsNow,pfT,pm,null,l14),
-      hConf:calcHConf(stats,l14)};
-  }
+  // Build hitter — uses /batch-hitters for fast parallel server-side computation
+  async function buildAllHitters(roster, spHand, pRow, arsenal, teamKey) {
+    if (!roster.length) return [];
+    const ids = roster.map(h=>String(h.id)).join(',');
+    let batchData = {};
+    try {
+      const r = await fetch(`${WORKER_URL}/batch-hitters?ids=${ids}&season=2026&spHand=${spHand}&team=${teamKey}`);
+      if (r.ok) batchData = await r.json();
+    } catch {}
 
-  async function batchFetch(roster,spHand,pRow,arsenal){
-    const res=[]; const B=6;
-    for(let i=0;i<roster.length;i+=B){
-      const chunk=roster.slice(i,i+B);
-      const rows=await Promise.all(chunk.map(h=>buildH(h,spHand,pRow,arsenal)));
-      res.push(...rows);
-      // progressive render
-      S.hitters[S.team]=S.hitters[S.team].concat(rows);
-      renderHitters();
-    }
-    return res;
+    const pr = calcPR(pRow);
+    const wsNow = wxS(S.weather||{temp:72,rain:0,wind:0,wdir:0});
+    const pfT = PARK[teamKey==='away'?S.game?.home:S.game?.away]||1.00;
+    const pm = calcPM({}, arsenal);
+
+    return roster.map(h => {
+      const sid = String(h.id);
+      const bd = batchData[sid];
+      const stats = bd?.stats||{};
+      const l14  = bd?.l14||{};
+      return {...h, ...stats, l14, spHand, pRow, arsenal, pitchSplits:{}, platoon:{},
+        hs: calcHS(stats, l14), pm, platWoba: null,
+        hrScore: calcHRS(stats, pr, wsNow, pfT, pm, null, l14),
+        hConf: calcHConf(stats, l14)};
+    });
   }
 
   S.hitters={away:[],home:[]};
-  const [awH2,hmH2]=await Promise.all([
-    batchFetch(awR,S.pHands.home,S.pRows.away,S.arsenals.away),
-    batchFetch(hmR,S.pHands.away,S.pRows.home,S.arsenals.home),
-  ]);
-  S.hitters={away:awH2,home:hmH2};
+  // Load both teams in parallel, render as each completes
+  const awayProm = buildAllHitters(awR, S.pHands.home, S.pRows.away, S.arsenals.away, 'away').then(rows=>{
+    S.hitters.away=rows; if(S.team==='away') renderHitters(); return rows;
+  });
+  const homeProm = buildAllHitters(hmR, S.pHands.away, S.pRows.home, S.arsenals.home, 'home').then(rows=>{
+    S.hitters.home=rows; if(S.team==='home') renderHitters(); return rows;
+  });
+  await Promise.all([awayProm, homeProm]);
   renderHitters();
 }
 
