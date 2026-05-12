@@ -362,7 +362,21 @@ const MLB_API = 'https://statsapi.mlb.com/api/v1';
 // ══════════════════════════════════════════════════════════
 
 // !! PASTE YOUR WORKER URL HERE after deploying !!
-const WORKER_URL = 'https://bright-fly-47.jimtufexis-max.deno.net';
+const WORKER_URL = 'https://bright-fly-47.deno.dev';
+
+// Test connectivity on load and show status
+async function testWorker() {
+  try {
+    const r = await fetch(WORKER_URL + '/', {signal: AbortSignal.timeout(8000)});
+    console.log('Worker status:', r.status, r.ok ? 'OK' : 'FAIL');
+    const t = await r.text();
+    console.log('Worker response:', t.slice(0,100));
+    return r.ok;
+  } catch(e) {
+    console.error('Worker unreachable:', e);
+    return false;
+  }
+}
 
 // In-memory client cache
 const _wc = {};
@@ -498,7 +512,16 @@ async function loadSlate() {
   try {
     slateGames = await wfetch(`/slate?date=${ds(S.date)}`, 5*60*1000);
   } catch(e) {
-    document.getElementById('gameGrid').innerHTML = `<div class="empty">Failed to load — check WORKER_URL is set<br><small>${e.message}</small></div>`;
+    // Show exactly what went wrong
+    const errMsg = String(e.message||e);
+    document.getElementById('gameGrid').innerHTML = `
+      <div class="empty" style="text-align:left;padding:14px">
+        <div style="color:var(--red);font-weight:700;margin-bottom:8px">Failed to load games</div>
+        <div style="font-size:.75rem;color:var(--t3);margin-bottom:6px">Worker URL: ${WORKER_URL}</div>
+        <div style="font-size:.72rem;color:var(--t4);font-family:'JetBrains Mono',monospace;background:var(--bg3);padding:8px;border-radius:6px;word-break:break-all">${errMsg}</div>
+        <div style="font-size:.72rem;color:var(--t4);margin-top:8px">Open browser console for details</div>
+      </div>`;
+    console.error('loadSlate error:', e);
     return;
   }
 
@@ -1093,6 +1116,7 @@ function renderABResults(){
    INIT
 ══════════════════════════════════════════════════════════ */
 prewarm();   // fire background fetches immediately to warm worker cache
+testWorker().then(ok => console.log('Worker reachable:', ok));
 loadSlate();
 </script>
 </body>
